@@ -68,7 +68,7 @@ CATEGORY_KEYWORDS = [
     ("Sector Specific / FactSheets & Factbooks", [
         "factsheet", "fact-sheet", "fact_sheet", "factbook",
         "fact-book", "fact_book", "product-brochure",
-        "product_brochure", "brochure",
+        "product_brochure", "brochure","resources",
     ]),
     ("Sector Specific / Prepared Remarks", [
         "prepared-remarks", "prepared_remarks", "preparedremarks",
@@ -286,7 +286,7 @@ OUT_OF_SCOPE_KEYWORDS = [
     "stock-quote", "stock_quote",
     "dividend-history", "dividend_history",
     "/careers/", "/jobs/", "clinical-trial",
-    "clinical_trial", "clinicaltrial",
+    "clinical_trial", "clinicaltrial","sec-filngs",
     "prescription", "prescribing-information",
     "prescribing_information", "safety-sheet",
     "safety_sheet", "amazon.com", "reddit.com",
