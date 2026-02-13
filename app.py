@@ -20,290 +20,719 @@ if 'crawling' not in st.session_state:
 if 'results' not in st.session_state:
     st.session_state.results = None
 
-# ─────────────────────────────────────────────
-# CATEGORY DEFINITIONS  (order matters – first match wins)
-# Each tuple: (category_name, [keywords_in_url])
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+# CATEGORY DEFINITIONS — aligned to Document Category Table
+# Order matters: first match wins. More specific categories
+# are listed BEFORE broader/generic ones.
+# Each tuple: (display_category, [url_keywords])
+# ═══════════════════════════════════════════════════════════════
+
 CATEGORY_KEYWORDS = [
-    # ── Presentations ──
-    ("Presentations / Investor Day & Earnings Presentations", [
+
+    # ──────────────────────────────────────────
+    # 1. PRESENTATIONS
+    # ──────────────────────────────────────────
+    ("1. Presentations / Investor Day Presentations", [
         "investor-day", "investor_day", "investorday",
-        "earnings-presentation", "earnings_presentation",
-        "earningspresentation", "investor-presentation",
-        "investor_presentation", "investorpresentation",
+        "investor-presentation", "investor_presentation",
+        "investorpresentation",
     ]),
-    ("Presentations / Supplementary Information", [
+    ("1. Presentations / Earnings Presentations", [
+        "earnings-presentation", "earnings_presentation",
+        "earningspresentation", "earnings-deck", "earnings_deck",
+        "earnings-slide", "earnings_slide",
+    ]),
+    ("1. Presentations / Supplementary Information", [
         "supplementary", "supplemental-info", "supplemental_info",
         "supplemental-data", "supplementary-information",
+        "supplemental-information", "supplemental",
     ]),
-    ("Presentations / Non-GAAP Reconciliation / Non-IFRS Measures", [
-        "non-gaap", "non_gaap", "nongaap", "non-ifrs", "non_ifrs",
-        "nonifrs", "reconciliation",
+    ("1. Presentations / Non-GAAP Reconciliation / Non-IFRS Measures", [
+        "non-gaap", "non_gaap", "nongaap",
+        "non-ifrs", "non_ifrs", "nonifrs",
+        "gaap-reconciliation", "gaap_reconciliation",
+        "reconciliation",
     ]),
-    ("Presentations / ESG & SASB Presentations", [
+    ("1. Presentations / ESG Presentations / SASB Presentations", [
         "esg-presentation", "esg_presentation",
-        "sasb-presentation", "sasb_presentation", "sasb",
+        "sasb-presentation", "sasb_presentation",
+        "esg-slide", "esg_slide",
     ]),
-    ("Presentations / Letter to Shareholders", [
+    ("1. Presentations / Letter to Shareholders", [
         "letter-to-shareholder", "letter_to_shareholder",
         "shareholder-letter", "shareholder_letter",
-        "shareholderletter",
+        "shareholderletter", "letter-to-stockholder",
+        "letter_to_stockholder",
     ]),
-    ("Presentations / Roadshow Presentation", [
-        "roadshow",
+    ("1. Presentations / Roadshow Presentations", [
+        "roadshow", "road-show", "road_show",
     ]),
-    ("Presentations / AGM Presentation", [
+    ("1. Presentations / AGM Presentations", [
         "agm-presentation", "agm_presentation",
         "annual-general-meeting-presentation",
+        "agm-slide", "agm_slide",
     ]),
 
-    # ── Sector Specific Content ──
-    ("Sector Specific / White Paper", [
-        "whitepaper", "white-paper", "white_paper",
-    ]),
-    ("Sector Specific / Case Study", [
-        "case-study", "case_study", "casestudy", "customer-story",
-        "customer_story", "customerstory",
-    ]),
-    ("Sector Specific / FactSheets & Factbooks", [
-        "factsheet", "fact-sheet", "fact_sheet", "factbook",
-        "fact-book", "fact_book", "product-brochure",
-        "product_brochure", "brochure","resources",
-    ]),
-    ("Sector Specific / Prepared Remarks", [
-        "prepared-remarks", "prepared_remarks", "preparedremarks",
-    ]),
-    ("Sector Specific / Speeches", [
-        "speech", "speeches",
-    ]),
-    ("Sector Specific / Follow Up Transcripts", [
-        "follow-up-transcript", "follow_up_transcript",
-        "followup-transcript", "transcript",
-    ]),
-    ("Sector Specific / Integrated Resource Plans", [
-        "integrated-resource-plan", "integrated_resource_plan",
-        "resource-plan", "resource_plan",
-    ]),
-    ("Sector Specific / Scientific Posters & Presentations", [
-        "scientific-poster", "scientific_poster", "poster-presentation",
-        "poster_presentation",
-    ]),
-    ("Sector Specific / Blogs & Insights", [
-        "blog", "insights", "viewpoints", "thought-leadership",
-        "thought_leadership", "perspectives",
-    ]),
-
-    # ── Funds Sheets ──
-    ("Funds Sheets", [
-        "fund-sheet", "fund_sheet", "fundsheet",
-        "fund-report", "fund_report", "fund-prospectus",
-        "fund_prospectus", "fund-annual",
-    ]),
-
-    # ── Press Releases / News ──
-    ("Press Releases / News", [
+    # ──────────────────────────────────────────
+    # 2. PRESS RELEASES / NEWS / ANNOUNCEMENTS
+    # ──────────────────────────────────────────
+    ("2. Press Releases / News / Announcements", [
         "press-release", "press_release", "pressrelease",
         "news-release", "news_release", "newsrelease",
-        "newsroom", "news-room", "media-center", "media_center",
-        "mediacenter", "press-room", "pressroom",
-        "/news/", "/news.", "announcement", "/media/",
+        "newsroom", "news-room", "news_room",
+        "media-center", "media_center", "mediacenter",
+        "press-room", "pressroom", "press_room",
+        "/news/", "/news.",
+        "announcement", "/announcements/",
+        "/media/", "media-release", "media_release",
+        "company-news", "company_news",
+        "latest-news", "latest_news",
     ]),
 
-    # ── Filings / Annual Report ──
-    ("Filings / Annual Report & Integrated Report", [
+    # ──────────────────────────────────────────
+    # 3. FILINGS
+    # ──────────────────────────────────────────
+
+    # Annual / Integrated Report
+    ("3. Filings / Annual Report & Integrated Report", [
         "annual-report", "annual_report", "annualreport",
         "integrated-report", "integrated_report", "integratedreport",
+        "yearly-report", "yearly_report",
     ]),
-    ("Filings / Interim Report", [
+    # Interim Report
+    ("3. Filings / Interim Report", [
         "interim-report", "interim_report", "interimreport",
         "half-year-report", "half_year_report", "halfyear",
-        "quarterly-report", "quarterly_report",
+        "half-yearly", "half_yearly",
+        "quarterly-report", "quarterly_report", "quarterlyreport",
+        "semi-annual", "semi_annual", "semiannual",
+        "q1-report", "q2-report", "q3-report", "q4-report",
     ]),
-    ("Filings / Proxies & Information", [
+    # Management Report / MD&A
+    ("3. Filings / Management Report & MD&A", [
+        "management-report", "management_report",
+        "management-commentary", "management_commentary",
+        "md-a", "md_a", "mda",
+        "management-discussion", "management_discussion",
+    ]),
+    # Proxies & Information
+    ("3. Filings / Proxies & Information", [
         "proxy", "proxy-statement", "proxy_statement",
-        "agm-notice", "agm_notice", "egm-notice", "egm_notice",
-        "board-change", "board_change", "appointment",
-        "resignation", "reorgani", "restructur",
+        "proxystatement", "information-circular",
+        "information_circular",
+    ]),
+    # AGM / EGM Notices
+    ("3. Filings / AGM & EGM Notices and Filings", [
+        "agm-notice", "agm_notice", "agmnotice",
+        "egm-notice", "egm_notice", "egmnotice",
+        "agm-filing", "agm_filing",
+        "general-meeting-notice", "general_meeting_notice",
+        "/agm/", "/egm/",
+    ]),
+    # Board Changes, Appointments & Resignations
+    ("3. Filings / Board Changes, Appointments & Resignations", [
+        "board-change", "board_change", "boardchange",
+        "appointment", "resignation",
+        "director-change", "director_change",
+        "board-appointment", "board_appointment",
+    ]),
+    # Business Administration, Reorganization & Restructures
+    ("3. Filings / Reorganization & Restructures", [
+        "reorgani", "restructur", "reorganization",
+        "restructuring", "business-administration",
+        "business_administration",
+    ]),
+    # Contractual Agreements
+    ("3. Filings / Contractual Agreements", [
+        "contractual-agreement", "contractual_agreement",
+        "contract-agreement", "contract_agreement",
+        "material-contract", "material_contract",
+    ]),
+    # Cancellations & Changes
+    ("3. Filings / Cancellations & Changes", [
+        "cancellation", "cancel-notice", "cancel_notice",
+        "filing-change", "filing_change",
+    ]),
+    # Delisting, Suspension & Bankruptcy
+    ("3. Filings / Delisting, Suspension & Bankruptcy", [
         "delisting", "suspension", "bankruptcy",
+        "delist", "de-list", "de_list",
+        "trading-suspension", "trading_suspension",
+    ]),
+    # Other Acquisitions & Disposals
+    ("3. Filings / Acquisitions & Disposals", [
+        "disposal", "disposals", "divestiture",
+        "asset-sale", "asset_sale",
+    ]),
+    # Legal Actions
+    ("3. Filings / Legal Actions", [
+        "legal-action", "legal_action", "legalaction",
+        "litigation", "lawsuit", "legal-proceeding",
+        "legal_proceeding",
+    ]),
+    # Material Changes
+    ("3. Filings / Material Changes", [
+        "material-change", "material_change", "materialchange",
+    ]),
+    # Late Filing Notices
+    ("3. Filings / Late Filing Notices", [
+        "late-filing", "late_filing", "latefiling",
+        "late-notice", "late_notice",
+    ]),
+    # Regulatory Correspondence
+    ("3. Filings / Regulatory Correspondence & Letters", [
         "regulatory-correspondence", "regulatory_correspondence",
-        "material-change", "material_change",
-        "late-filing", "late_filing",
+        "regulatory-letter", "regulatory_letter",
+        "regulator-letter", "regulator_letter",
     ]),
-    ("Filings / Operating Metrics & Earnings", [
+    # Exemptions & Other Applications
+    ("3. Filings / Exemptions & Other Applications", [
+        "exemption", "exemptions",
+        "other-application", "other_application",
+    ]),
+    # Operating Metrics / Earnings, Profit, Loss
+    ("3. Filings / Operating Metrics & Earnings", [
         "operating-metric", "operating_metric", "operatingmetric",
-        "earnings", "profit-loss", "profit_loss",
+        "profit-loss", "profit_loss", "profitloss",
         "financial-result", "financial_result",
+        "operating-result", "operating_result",
     ]),
-    ("Filings / Fixed Income & Bond Prospectus", [
+    # Fixed Income / Debt / Bond Prospectus
+    ("3. Filings / Fixed Income & Bond Prospectus", [
         "bond-prospectus", "bond_prospectus", "bondprospectus",
         "fixed-income", "fixed_income", "fixedincome",
         "debt-prospectus", "debt_prospectus",
         "green-bond", "green_bond", "greenbond",
         "municipal-bond", "municipal_bond",
         "bond-offering", "bond_offering",
+        "bond-issue", "bond_issue",
     ]),
-    ("Filings / Prospectus - General", [
-        "prospectus",
-    ]),
-    ("Filings / Prospectus - Equity, M&A, IPO", [
+    # Prospectus - Equity, M&A, IPO  (before General)
+    ("3. Filings / Prospectus - Equity, M&A, IPO", [
         "ipo-prospectus", "ipo_prospectus",
         "equity-prospectus", "equity_prospectus",
-        "ipo", "initial-public-offering",
+        "initial-public-offering", "initial_public_offering",
     ]),
-    ("Filings / Ownership", [
-        "ownership", "shareholding-pattern", "shareholding_pattern",
-        "beneficial-ownership", "beneficial_ownership",
-        "institutional-ownership", "institutional_ownership",
-        "directors-officers", "directors_officers",
-        "major-shareholder", "major_shareholder",
+    # Prospectus - General
+    ("3. Filings / Prospectus - General", [
+        "prospectus",
     ]),
-    ("Filings / Registrations - Securities", [
-        "registration", "listing-application",
-        "listing_application", "debt-indenture",
-        "debt_indenture", "credit-agreement",
-        "credit_agreement", "pre-ipo", "pre_ipo",
+    # Securities Registrations
+    ("3. Filings / Securities Registrations", [
+        "securities-registration", "securities_registration",
+        "listing-application", "listing_application",
+        "listingapplication",
+    ]),
+    # Withdrawal & Termination
+    ("3. Filings / Withdrawal & Termination", [
         "withdrawal", "termination",
+        "security-withdrawal", "security_withdrawal",
     ]),
-    ("Filings / Capital Changes", [
+    # Debt Indentures, Credit Agreements
+    ("3. Filings / Debt Indentures & Credit Agreements", [
+        "debt-indenture", "debt_indenture", "debtindenture",
+        "credit-agreement", "credit_agreement", "creditagreement",
+        "loan-agreement", "loan_agreement",
+    ]),
+    # Pre-IPO / Privately Held Offering
+    ("3. Filings / Pre-IPO & Private Offering", [
+        "pre-ipo", "pre_ipo", "preipo",
+        "private-offering", "private_offering",
+        "privately-held", "privately_held",
+    ]),
+    # Ownership - Institutional
+    ("3. Filings / Ownership - Institutional", [
+        "institutional-ownership", "institutional_ownership",
+        "institutional-holding", "institutional_holding",
+    ]),
+    # Ownership - JAPAN5%
+    ("3. Filings / Ownership - JAPAN5%", [
+        "japan5", "japan-5",
+    ]),
+    # Ownership - Directors & Officers
+    ("3. Filings / Ownership - Directors & Officers", [
+        "directors-officers", "directors_officers",
+        "officer-ownership", "officer_ownership",
+        "director-ownership", "director_ownership",
+    ]),
+    # Ownership - Beneficial
+    ("3. Filings / Ownership - Beneficial", [
+        "beneficial-ownership", "beneficial_ownership",
+        "beneficialownership",
+    ]),
+    # Shareholding Pattern
+    ("3. Filings / Shareholding Pattern", [
+        "shareholding-pattern", "shareholding_pattern",
+        "shareholdingpattern", "share-holding-pattern",
+    ]),
+    # Ownership - General fallback
+    ("3. Filings / Ownership", [
+        "ownership", "major-shareholder", "major_shareholder",
+    ]),
+    # Capital Changes — Stock Options
+    ("3. Filings / Capital Changes - Stock Options", [
         "stock-option", "stock_option", "stockoption",
+        "employee-stock", "employee_stock",
+        "esop", "espp",
+    ]),
+    # Capital Changes — Stock Splits
+    ("3. Filings / Capital Changes - Stock Splits", [
         "stock-split", "stock_split", "stocksplit",
+        "reverse-split", "reverse_split",
+    ]),
+    # Capital Changes — Offers
+    ("3. Filings / Capital Changes - Offers", [
+        "tender-offer", "tender_offer", "tenderoffer",
+        "exchange-offer", "exchange_offer",
+        "rights-offer", "rights_offer", "rightsoffer",
+        "rights-issue", "rights_issue",
+    ]),
+    # Capital Changes — Repurchase / Buyback
+    ("3. Filings / Capital Changes - Repurchase & Buyback", [
+        "share-repurchase", "share_repurchase", "sharerepurchase",
+        "buyback", "buy-back", "buy_back",
+        "securities-purchase", "securities_purchase",
+    ]),
+    # Capital Changes — Corporate Actions
+    ("3. Filings / Capital Changes - Corporate Actions", [
         "corporate-action", "corporate_action", "corporateaction",
-        "share-repurchase", "share_repurchase", "buyback",
-        "rights-offer", "rights_offer",
     ]),
-    ("Filings / M&A, Merger, Takeover", [
-        "merger", "acquisition", "takeover", "take-over",
-        "take_over", "m-and-a", "m_and_a",
+    # M&A, Merger, Takeover
+    ("3. Filings / M&A, Merger, Takeover", [
+        "merger", "takeover", "take-over", "take_over",
+        "m-and-a", "m_and_a", "m&a",
     ]),
-    ("Filings / Dividends", [
+    # Dividends
+    ("3. Filings / Dividends", [
         "dividend",
     ]),
-    ("Filings / Auditors Report", [
-        "auditor", "audit-report", "audit_report",
+    # Auditors Report / Change in Auditor
+    ("3. Filings / Auditors Report & Change in Auditor", [
+        "auditor", "audit-report", "audit_report", "auditreport",
         "change-in-auditor", "change_in_auditor",
+        "auditor-change", "auditor_change",
+    ]),
+    # Change in Year End
+    ("3. Filings / Change in Year End", [
+        "change-in-year-end", "change_in_year_end",
+        "fiscal-year-change", "fiscal_year_change",
+        "year-end-change", "year_end_change",
+    ]),
+    # Fund Sheets
+    ("3. Filings / Fund Sheets", [
+        "fund-sheet", "fund_sheet", "fundsheet",
+        "fund-report", "fund_report",
+        "fund-prospectus", "fund_prospectus",
+        "fund-annual", "fund_annual",
+        "etf-report", "etf_report",
     ]),
 
-    # ── ESG ──
-    ("ESG / Sustainability & CSR Reports", [
-        "sustainability", "csr", "corporate-social-responsibility",
-        "corporate_social_responsibility",
+    # ──────────────────────────────────────────
+    # 4. ESG (ENVIRONMENTAL, SOCIAL, GOVERNANCE)
+    # ──────────────────────────────────────────
+    ("4. ESG / Sustainability Reports", [
         "sustainability-report", "sustainability_report",
+        "sustainabilityreport",
     ]),
-    ("ESG / EHS Reports", [
+    ("4. ESG / CSR Reports", [
+        "csr-report", "csr_report", "csrreport",
+        "corporate-social-responsibility", "corporate_social_responsibility",
+        "csr",
+    ]),
+    ("4. ESG / Integrated Reports (ESG focus)", [
+        "esg-integrated", "esg_integrated",
+    ]),
+    ("4. ESG / EHS Reports", [
+        "ehs-report", "ehs_report", "ehsreport",
         "ehs", "environmental-health-safety",
-        "environmental_health_safety", "ehs-report", "ehs_report",
+        "environmental_health_safety",
     ]),
-    ("ESG / Social Reports", [
-        "social-report", "social_report", "socialreport",
-        "social-responsibility", "social_responsibility",
-        "community-engagement", "community_engagement",
+    ("4. ESG / Carbon Disclosure Reports", [
+        "carbon-disclosure", "carbon_disclosure", "carbondisclosure",
+        "cdp-report", "cdp_report",
+        "carbon-report", "carbon_report",
     ]),
-    ("ESG / GRI Reports", [
-        "gri", "global-reporting-initiative",
-        "global_reporting_initiative", "gri-report", "gri_report",
-    ]),
-    ("ESG / Carbon Disclosure Reports", [
-        "carbon-disclosure", "carbon_disclosure",
-        "carbondisclosure", "cdp", "greenhouse-gas",
-        "greenhouse_gas", "ghg", "carbon-footprint",
-        "carbon_footprint",
-    ]),
-    ("ESG / Company Policies & Governance", [
-        "governance", "charter", "code-of-ethics",
-        "code_of_ethics", "codeofethics", "guidelines",
-        "corporate-governance", "corporate_governance",
-        "governance-document", "governance_document",
-        "policy", "policies",
-    ]),
-    ("ESG / ESTMA Report", [
-        "estma",
-    ]),
-    ("ESG / Green Report", [
+    ("4. ESG / Green Reports", [
         "green-report", "green_report", "greenreport",
     ]),
-    ("ESG / TCFD Report", [
+    ("4. ESG / TCFD Reports", [
+        "tcfd-report", "tcfd_report", "tcfdreport",
         "tcfd",
     ]),
-    ("ESG / ESG Presentations", [
+    ("4. ESG / Climate Risk Reports", [
+        "climate-risk", "climate_risk", "climaterisk",
+        "climate-report", "climate_report",
+    ]),
+    ("4. ESG / Social Reports", [
+        "social-report", "social_report", "socialreport",
+        "social-impact", "social_impact",
+    ]),
+    ("4. ESG / Human Rights Reports", [
+        "human-rights", "human_rights", "humanrights",
+        "human-rights-report", "human_rights_report",
+        "modern-slavery", "modern_slavery",
+    ]),
+    ("4. ESG / Diversity & Inclusion Reports", [
+        "diversity-inclusion", "diversity_inclusion",
+        "diversityinclusion", "dei-report", "dei_report",
+        "diversity-report", "diversity_report",
+        "inclusion-report", "inclusion_report",
+    ]),
+    ("4. ESG / GRI Reports", [
+        "gri-report", "gri_report", "grireport",
+        "gri-index", "gri_index",
+        "global-reporting-initiative", "global_reporting_initiative",
+        "gri",
+    ]),
+    ("4. ESG / SASB Reports", [
+        "sasb-report", "sasb_report", "sasbreport",
+        "sasb-index", "sasb_index",
+        "sasb",
+    ]),
+    ("4. ESG / CDP Reports", [
+        "cdp",
+    ]),
+    ("4. ESG / ESTMA Reports", [
+        "estma",
+    ]),
+    ("4. ESG / Company Policies", [
+        "company-policy", "company_policy",
+        "corporate-policy", "corporate_policy",
+        "/policy/", "/policies/",
+    ]),
+    ("4. ESG / Charters", [
+        "charter", "/charters/",
+    ]),
+    ("4. ESG / Guidelines", [
+        "guideline", "/guidelines/",
+    ]),
+    ("4. ESG / Code of Ethics", [
+        "code-of-ethics", "code_of_ethics", "codeofethics",
+        "code-of-conduct", "code_of_conduct", "codeofconduct",
+        "ethics-code", "ethics_code",
+    ]),
+    ("4. ESG / Governance Policies", [
+        "governance-policy", "governance_policy",
+        "corporate-governance", "corporate_governance",
+        "governance-document", "governance_document",
+        "governance",
+    ]),
+    ("4. ESG / Sustainability (General)", [
+        "sustainability", "sustainable",
+    ]),
+    ("4. ESG / Topic-Specific ESG Reports", [
+        "esg-report", "esg_report", "esgreport",
         "esg",
     ]),
 
-    # ── Financial Results & Corporate Actions ──
-    ("Results / Earnings / Revenue / Financial Snapshots", [
-        "financial-snapshot", "financial_snapshot",
-        "quarterly-result", "quarterly_result",
-        "revenue", "sales-result", "sales_result",
-        "financial-highlight", "financial_highlight",
-        "eps", "earnings-per-share", "earnings_per_share",
-        "financial-result", "financial_result",
-        "funding", "corporate-action", "corporate_action",
+    # ──────────────────────────────────────────
+    # 5. SECTOR-SPECIFIC CONTENT
+    # ──────────────────────────────────────────
+    ("5. Sector Specific / White Papers", [
+        "whitepaper", "white-paper", "white_paper",
+    ]),
+    ("5. Sector Specific / Case Studies", [
+        "case-study", "case_study", "casestudy",
+        "case-studies", "case_studies",
+    ]),
+    ("5. Sector Specific / Industry Insights", [
+        "industry-insight", "industry_insight", "industryinsight",
+        "industry-trend", "industry_trend",
+        "industry-analysis", "industry_analysis",
+    ]),
+    ("5. Sector Specific / Thought Leadership", [
+        "thought-leadership", "thought_leadership", "thoughtleadership",
+    ]),
+    ("5. Sector Specific / FactSheets & Factbooks", [
+        "factsheet", "fact-sheet", "fact_sheet",
+        "factbook", "fact-book", "fact_book",
+    ]),
+    ("5. Sector Specific / Product Brochures", [
+        "product-brochure", "product_brochure", "productbrochure",
+        "brochure",
+    ]),
+    ("5. Sector Specific / One Pagers", [
+        "one-pager", "one_pager", "onepager",
+    ]),
+    ("5. Sector Specific / Prepared Remarks", [
+        "prepared-remarks", "prepared_remarks", "preparedremarks",
+        "prepared-remark", "prepared_remark",
+    ]),
+    ("5. Sector Specific / Speeches", [
+        "speech", "speeches",
+    ]),
+    ("5. Sector Specific / Executive Commentary", [
+        "executive-commentary", "executive_commentary",
+        "executivecommentary", "ceo-commentary", "ceo_commentary",
+    ]),
+    ("5. Sector Specific / Follow-Up Transcripts", [
+        "follow-up-transcript", "follow_up_transcript",
+        "followup-transcript", "followup_transcript",
+        "transcript",
+    ]),
+    ("5. Sector Specific / Integrated Resource Plans", [
+        "integrated-resource-plan", "integrated_resource_plan",
+        "resource-plan", "resource_plan",
+        "irp",
+    ]),
+    ("5. Sector Specific / Scientific Posters & Presentations", [
+        "scientific-poster", "scientific_poster",
+        "poster-presentation", "poster_presentation",
+        "research-poster", "research_poster",
+    ]),
+    ("5. Sector Specific / Research Publications", [
+        "research-publication", "research_publication",
+        "researchpublication",
+    ]),
+    ("5. Sector Specific / Blogs & Insights", [
+        "blog", "/blogs/", "insights", "/insights/",
+        "viewpoints", "perspectives",
+    ]),
+    ("5. Sector Specific / Leadership Insights & Interviews", [
+        "leadership-insight", "leadership_insight",
+        "leadership-interview", "leadership_interview",
+        "ceo-interview", "ceo_interview",
+        "executive-interview", "executive_interview",
+    ]),
+    ("5. Sector Specific / Customer Stories", [
+        "customer-story", "customer_story", "customerstory",
+        "customer-stories", "customer_stories",
+        "success-story", "success_story",
+        "client-story", "client_story",
     ]),
 
-    # ── About Us / Management ──
-    ("About Us / Management Profiles", [
-        "about-us", "about_us", "aboutus", "who-we-are",
-        "who_we_are", "our-company", "our_company",
-        "management", "management-team", "management_team",
+    # ──────────────────────────────────────────
+    # 6. COMPANY INFORMATION & PROFILES
+    # ──────────────────────────────────────────
+    ("6. Company Info / About Us", [
+        "about-us", "about_us", "aboutus",
+        "who-we-are", "who_we_are",
+        "our-company", "our_company",
+        "company-overview", "company_overview",
+        "/about/", "/about.",
+    ]),
+    ("6. Company Info / Company History", [
+        "company-history", "company_history", "companyhistory",
+        "our-history", "our_history", "ourhistory",
+        "/history/", "/history.",
+    ]),
+    ("6. Company Info / Mission & Vision", [
+        "mission", "vision",
+        "mission-vision", "mission_vision",
+        "our-mission", "our_mission",
+        "our-vision", "our_vision",
+        "purpose", "our-purpose", "our_purpose",
+    ]),
+    ("6. Company Info / Corporate Information", [
+        "corporate-information", "corporate_information",
+        "corporate-info", "corporate_info",
+    ]),
+    ("6. Company Info / Management Profiles", [
+        "management-team", "management_team", "managementteam",
+        "management-profile", "management_profile",
+        "management-committee", "management_committee",
+        "management",
+    ]),
+    ("6. Company Info / Board of Directors", [
         "board-of-director", "board_of_director",
-        "executive-team", "executive_team",
+        "boardofdirector", "board-member", "board_member",
+        "/board/",
+    ]),
+    ("6. Company Info / Executive Team", [
+        "executive-team", "executive_team", "executiveteam",
+        "executive-profile", "executive_profile",
+        "c-suite", "c_suite",
+    ]),
+    ("6. Company Info / Leadership", [
         "leadership", "our-team", "our_team",
+        "leadership-team", "leadership_team",
     ]),
-    ("Suppliers / Partners / Customers", [
-        "supplier", "partner", "customer-list",
-        "customer_list", "our-partner", "our_partner",
-        "our-customer", "our_customer", "global-partner",
-        "global_partner", "who-we-work-with",
+    ("6. Company Info / Suppliers", [
+        "supplier", "/suppliers/",
+        "our-supplier", "our_supplier",
+        "vendor-list", "vendor_list",
+    ]),
+    ("6. Company Info / Partners", [
+        "partner", "/partners/",
+        "our-partner", "our_partner",
+        "global-partner", "global_partner",
+        "strategic-alliance", "strategic_alliance",
+        "alliance",
+    ]),
+    ("6. Company Info / Customers", [
+        "customer-list", "customer_list",
+        "our-customer", "our_customer",
+        "/customers/", "client-list", "client_list",
+        "who-we-work-with", "who_we_work_with",
     ]),
 
-    # ── Infographics / Project Updates / R&D ──
-    ("Infographics / Project Updates / R&D", [
-        "infographic", "project-update", "project_update",
-        "business-update", "business_update",
-        "r-and-d", "r_and_d", "research-and-development",
-        "research_and_development", "innovation",
-        "activity-report", "activity_report",
-        "rig-count", "rigcount",
+    # ──────────────────────────────────────────
+    # 7. BUSINESS UPDATES & REPORTS
+    # ──────────────────────────────────────────
+    ("7. Business Updates / Project Updates", [
+        "project-update", "project_update", "projectupdate",
+        "project-status", "project_status",
+    ]),
+    ("7. Business Updates / Business Updates", [
+        "business-update", "business_update", "businessupdate",
+    ]),
+    ("7. Business Updates / R&D Updates", [
+        "r-and-d", "r_and_d", "r&d",
+        "research-and-development", "research_and_development",
+        "research-development", "research_development",
+        "innovation", "/innovation/",
+        "rd-update", "rd_update",
+    ]),
+    ("7. Business Updates / Activity Reports", [
+        "activity-report", "activity_report", "activityreport",
+    ]),
+    ("7. Business Updates / Infographics", [
+        "infographic", "/infographics/",
+    ]),
+    ("7. Business Updates / Results Announcements", [
+        "results-announcement", "results_announcement",
+        "result-announcement", "result_announcement",
+    ]),
+    ("7. Business Updates / Earnings Updates", [
+        "earnings-update", "earnings_update",
+        "earnings",
+    ]),
+    ("7. Business Updates / Revenue & Sales Reports", [
+        "revenue-report", "revenue_report",
+        "sales-report", "sales_report",
+        "revenue", "sales-result", "sales_result",
+    ]),
+    ("7. Business Updates / Financial Highlights", [
+        "financial-highlight", "financial_highlight",
+        "financial-snapshot", "financial_snapshot",
+        "financial-summary", "financial_summary",
+    ]),
+    ("7. Business Updates / Corporate Actions Updates", [
+        # already matched under Filings but kept for HTML pages
+    ]),
+    ("7. Business Updates / Funding Announcements", [
+        "funding-announcement", "funding_announcement",
+        "funding", "fundraise", "fund-raise", "fund_raise",
+        "capital-raise", "capital_raise",
     ]),
 
-    # ── Products / Services ──
-    ("Products / Features / Services", [
-        "product", "service", "solution", "offering",
-        "product-launch", "product_launch", "feature",
-        "our-product", "our_product", "our-service",
-        "our_service", "drilling", "fluid",
+    # ──────────────────────────────────────────
+    # 8. PRODUCT & SERVICE INFORMATION
+    # ──────────────────────────────────────────
+    ("8. Products & Services / Product Listings", [
+        "product-listing", "product_listing", "productlisting",
+        "product-catalog", "product_catalog",
+        "/products/", "/product/",
+    ]),
+    ("8. Products & Services / Product Launch Announcements", [
+        "product-launch", "product_launch", "productlaunch",
+        "new-product", "new_product",
+    ]),
+    ("8. Products & Services / Product Specifications", [
+        "product-spec", "product_spec", "productspec",
+        "specification", "/specs/",
+    ]),
+    ("8. Products & Services / Feature Descriptions", [
+        "feature-description", "feature_description",
+        "/features/", "/feature/",
+    ]),
+    ("8. Products & Services / Service Listings", [
+        "service-listing", "service_listing",
+        "/services/", "/service/",
+    ]),
+    ("8. Products & Services / Solutions Overview", [
+        "solution", "/solutions/",
+        "solutions-overview", "solutions_overview",
+    ]),
+    ("8. Products & Services / Service Model Information", [
+        "service-model", "service_model",
+        "pricing-model", "pricing_model",
+        "offering", "/offerings/",
+    ]),
+
+    # ──────────────────────────────────────────
+    # CATCH-ALL: Resources page (moved to bottom
+    # so it doesn't steal from more specific cats)
+    # ──────────────────────────────────────────
+    ("5. Sector Specific / Resources Page", [
+        "resources", "/resources/",
     ]),
 ]
 
-# ── Out of Scope keywords ──
+# ═══════════════════════════════════════════════════════════════
+# OUT OF SCOPE — keywords that mark a URL as irrelevant
+# ═══════════════════════════════════════════════════════════════
 OUT_OF_SCOPE_KEYWORDS = [
-    "career", "job", "jobs", "job-posting", "job_posting",
+    # Careers / Jobs
+    "career", "/careers/", "/careers.",
+    "job-posting", "job_posting", "jobposting",
+    "/jobs/", "/jobs.",
+    # FAQ
     "faq", "frequently-asked", "frequently_asked",
+    # Contact
     "contact-us", "contact_us", "contactus",
+    "/contact/", "/contact.",
+    # Privacy / Legal
     "privacy-policy", "privacy_policy", "privacypolicy",
     "terms-of-use", "terms_of_use", "termsofuse",
-    "disclaimer", "cookie-policy", "cookie_policy",
+    "terms-of-service", "terms_of_service",
+    "terms-and-conditions", "terms_and_conditions",
+    "disclaimer",
+    "accessibility-statement", "accessibility_statement",
+    "cookie-policy", "cookie_policy",
+    "legal-terms", "legal_terms",
+    # Stock / Dividend raw data
     "stock-price", "stock_price", "stockprice",
-    "stock-quote", "stock_quote",
+    "stock-quote", "stock_quote", "stockquote",
     "dividend-history", "dividend_history",
-    "/careers/", "/jobs/", "clinical-trial",
-    "clinical_trial", "clinicaltrial","sec-filngs",
-    "prescription", "prescribing-information",
-    "prescribing_information", "safety-sheet",
-    "safety_sheet", "amazon.com", "reddit.com",
+    # Clinical / Pharma
+    "clinical-trial", "clinical_trial", "clinicaltrial",
+    "/trials/", "/trial/",
+    "prescription", "prescribing-information", "prescribing_information",
+    "drug-label", "drug_label",
+    # Safety sheets
+    "safety-sheet", "safety_sheet", "safetysheet",
+    "safety-data-sheet", "safety_data_sheet",
+    "sds-sheet", "sds_sheet",
+    # FDA / Regulatory bodies
+    "fda-correspondence", "fda_correspondence",
+    "journal-abstract", "journal_abstract",
+    # SEC filings (already covered elsewhere)
+    "sec-filing", "sec_filing", "secfiling",
+    # Third-party research
+    "gartner.com", "forrester.com", "idc.com",
+    # E-commerce
+    "amazon.com", "ebay.com",
+    # Forums / Chat
+    "reddit.com", "/forum/", "/forums/",
+    "open-chat", "open_chat",
+    # Recipe docs
+    "recipe",
+    # Forms
+    "/forms/", "registration-form", "registration_form",
+    "supplier-form", "supplier_form",
+    # News agencies (not about company)
+    "timesofindia.com", "theguardian.com",
+    # Broker / Consulting research
+    "grandviewresearch.com", "williamblair.com",
+    "deloitte.com/publications",
 ]
 
 
 def categorize_url(url):
-    """Categorize a URL based on keyword matching. Returns category name or 'Unclassified'."""
+    """Categorize a URL based on keyword matching.
+    Returns category name, '⛔ Out of Scope', or '❓ Unclassified'."""
     url_lower = url.lower()
 
-    # Check out-of-scope first
+    # 1. Check out-of-scope first
     for kw in OUT_OF_SCOPE_KEYWORDS:
         if kw in url_lower:
             return "⛔ Out of Scope"
 
-    # Try each category
+    # 2. Try each category (first match wins)
     for category_name, keywords in CATEGORY_KEYWORDS:
+        if not keywords:  # skip empty keyword lists
+            continue
         for kw in keywords:
             if kw in url_lower:
                 return category_name
@@ -479,7 +908,8 @@ async def crawl_website(start_url, pdf_pattern, max_depth, max_concurrent, progr
                                 continue
 
                             if any(ext in normalized_absolute.lower() for ext in
-                                   ['.jpg', '.png', '.gif', '.css', '.js', '.xml', '.ico', '.svg', '.zip', '.exe']):
+                                   ['.jpg', '.png', '.gif', '.css', '.js', '.xml',
+                                    '.ico', '.svg', '.zip', '.exe']):
                                 continue
 
                             all_links.add(normalized_absolute)
@@ -493,10 +923,18 @@ async def crawl_website(start_url, pdf_pattern, max_depth, max_concurrent, progr
                                     new_urls.append((normalized_absolute, depth + 1))
 
                         if is_investor_or_media_page(normalized_url):
-                            json_links, json_pdfs = await extract_json_links(session, url, pdf_regex)
+                            json_links, json_pdfs = await extract_json_links(
+                                session, url, pdf_regex
+                            )
 
-                            json_links = {link for link in json_links if not is_social_media_url(link)}
-                            json_pdfs = {link for link in json_pdfs if not is_social_media_url(link)}
+                            json_links = {
+                                link for link in json_links
+                                if not is_social_media_url(link)
+                            }
+                            json_pdfs = {
+                                link for link in json_pdfs
+                                if not is_social_media_url(link)
+                            }
 
                             json_extracted_links.update(json_links)
                             all_links.update(json_links)
@@ -511,7 +949,12 @@ async def crawl_website(start_url, pdf_pattern, max_depth, max_concurrent, progr
 
             return new_urls
 
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36'
+            )
+        }
 
         async with aiohttp.ClientSession(headers=headers) as session:
             while queue:
@@ -520,8 +963,8 @@ async def crawl_website(start_url, pdf_pattern, max_depth, max_concurrent, progr
 
                 for _ in range(batch_size):
                     if queue:
-                        url, depth = queue.popleft()
-                        tasks.append(fetch_and_parse(session, url, depth))
+                        url, depth_val = queue.popleft()
+                        tasks.append(fetch_and_parse(session, url, depth_val))
 
                 results = await asyncio.gather(*tasks)
 
@@ -549,27 +992,39 @@ async def crawl_website(start_url, pdf_pattern, max_depth, max_concurrent, progr
         return {'error': str(e)}
 
 
-# ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
 # Streamlit UI
-# ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
 st.title("🔗 Website & PDF Link Extractor")
-st.markdown("**Async Deep Crawler with URL Categorization, Normalization & Social Media Filtering**")
+st.markdown(
+    "**Async Deep Crawler with URL Categorization, "
+    "Normalization & Social Media Filtering**"
+)
 
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Settings")
 
-    url_input = st.text_input("Website URL", value="https://", help="Enter the website URL to crawl")
+    url_input = st.text_input(
+        "Website URL", value="https://",
+        help="Enter the website URL to crawl"
+    )
 
-    depth = st.slider("Crawl Depth", min_value=1, max_value=5, value=2,
-                       help="How many levels deep to crawl (2 recommended)")
+    depth = st.slider(
+        "Crawl Depth", min_value=1, max_value=5, value=2,
+        help="How many levels deep to crawl (2 recommended)"
+    )
 
-    concurrent = st.slider("Concurrent Requests", min_value=5, max_value=50, value=30,
-                            help="Higher = faster but more server load")
+    concurrent = st.slider(
+        "Concurrent Requests", min_value=5, max_value=50, value=30,
+        help="Higher = faster but more server load"
+    )
 
-    pdf_pattern = st.text_input("PDF Regex Pattern",
-                                 value=r"\.pdf$|/pdf/|download.*pdf|\.PDF$",
-                                 help="Regular expression to detect PDF links")
+    pdf_pattern = st.text_input(
+        "PDF Regex Pattern",
+        value=r"\.pdf$|/pdf/|download.*pdf|\.PDF$",
+        help="Regular expression to detect PDF links"
+    )
 
     st.markdown("---")
     st.markdown("### Features")
@@ -578,23 +1033,40 @@ with st.sidebar:
     ✅ Social Media Filter  
     ✅ JSON Link Extraction  
     ✅ **Keyword-based Categorization**  
+    ✅ Out-of-Scope Detection  
     ✅ Clickable Results  
     """)
 
     st.markdown("---")
     st.markdown("### 📂 Categories Tracked")
-    # Show collapsed list of categories
     with st.expander("View all categories"):
+        current_section = ""
         for cat_name, _ in CATEGORY_KEYWORDS:
-            st.markdown(f"- {cat_name}")
+            section = cat_name.split("/")[0].strip()
+            if section != current_section:
+                st.markdown(f"**{section}**")
+                current_section = section
+            st.markdown(f"  - {cat_name}")
         st.markdown("- ⛔ Out of Scope")
         st.markdown("- ❓ Unclassified")
+
+
+# Sorting helper used in display tabs
+def sort_key(cat_name):
+    """Sort: numbered categories first, then Unclassified, then Out of Scope."""
+    if cat_name == "❓ Unclassified":
+        return (1, cat_name)
+    if cat_name == "⛔ Out of Scope":
+        return (2, cat_name)
+    return (0, cat_name)
+
 
 # Main content
 col1, col2 = st.columns([3, 1])
 
 with col1:
-    if st.button("🚀 Start Crawling", type="primary", disabled=st.session_state.crawling):
+    if st.button("🚀 Start Crawling", type="primary",
+                 disabled=st.session_state.crawling):
         if not url_input or url_input == "https://":
             st.error("Please enter a valid URL")
         else:
@@ -610,11 +1082,14 @@ with col1:
                 status_text = st.empty()
 
                 def update_progress(visited, queue_len):
-                    status_text.text(f"Pages crawled: {visited} | Queue: {queue_len}")
+                    status_text.text(
+                        f"Pages crawled: {visited} | Queue: {queue_len}"
+                    )
 
                 with st.spinner("Crawling website..."):
                     results = asyncio.run(crawl_website(
-                        url_input, pdf_pattern, depth, concurrent, update_progress
+                        url_input, pdf_pattern, depth, concurrent,
+                        update_progress
                     ))
 
                 st.session_state.results = results
@@ -627,9 +1102,9 @@ with col2:
         st.session_state.results = None
         st.rerun()
 
-# ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
 # Display results
-# ───────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
 if st.session_state.results:
     results = st.session_state.results
 
@@ -640,7 +1115,9 @@ if st.session_state.results:
         categorized = results.get('categorized_links', {})
         unclassified_count = len(categorized.get("❓ Unclassified", []))
         out_of_scope_count = len(categorized.get("⛔ Out of Scope", []))
-        classified_count = len(results['all_links']) - unclassified_count - out_of_scope_count
+        classified_count = (
+            len(results['all_links']) - unclassified_count - out_of_scope_count
+        )
 
         col1, col2, col3, col4, col5, col6 = st.columns(6)
         with col1:
@@ -689,26 +1166,19 @@ if st.session_state.results:
             st.subheader("🏷️ Links Sorted by Category")
 
             if categorized:
-                # Build a downloadable report
                 report_lines = []
-
-                # Sort categories: named categories first, then Unclassified, then Out of Scope
-                def sort_key(cat_name):
-                    if cat_name == "❓ Unclassified":
-                        return (1, cat_name)
-                    if cat_name == "⛔ Out of Scope":
-                        return (2, cat_name)
-                    return (0, cat_name)
-
                 sorted_cats = sorted(categorized.keys(), key=sort_key)
 
                 for cat in sorted_cats:
                     urls = categorized[cat]
-                    report_lines.append(f"\n{'='*80}")
+                    report_lines.append(f"\n{'=' * 80}")
                     report_lines.append(f"{cat}  ({len(urls)} URLs)")
-                    report_lines.append(f"{'='*80}")
+                    report_lines.append(f"{'=' * 80}")
 
-                    with st.expander(f"📂 {cat} — {len(urls)} URL(s)", expanded=False):
+                    with st.expander(
+                        f"📂 {cat} — {len(urls)} URL(s)",
+                        expanded=False
+                    ):
                         for u in urls:
                             st.markdown(f"- [{u}]({u})")
                             report_lines.append(u)
@@ -748,16 +1218,20 @@ if st.session_state.results:
 
             if categorized_pdfs:
                 pdf_report_lines = []
-
-                sorted_pdf_cats = sorted(categorized_pdfs.keys(), key=sort_key)
+                sorted_pdf_cats = sorted(
+                    categorized_pdfs.keys(), key=sort_key
+                )
 
                 for cat in sorted_pdf_cats:
                     urls = categorized_pdfs[cat]
-                    pdf_report_lines.append(f"\n{'='*80}")
+                    pdf_report_lines.append(f"\n{'=' * 80}")
                     pdf_report_lines.append(f"{cat}  ({len(urls)} PDFs)")
-                    pdf_report_lines.append(f"{'='*80}")
+                    pdf_report_lines.append(f"{'=' * 80}")
 
-                    with st.expander(f"📂 {cat} — {len(urls)} PDF(s)", expanded=False):
+                    with st.expander(
+                        f"📂 {cat} — {len(urls)} PDF(s)",
+                        expanded=False
+                    ):
                         for u in urls:
                             st.markdown(f"- [{u}]({u})")
                             pdf_report_lines.append(u)
@@ -775,14 +1249,27 @@ if st.session_state.results:
 
         # ── Tab 5: Pages with PDFs ──
         with tab5:
-            st.subheader(f"Pages Containing PDFs ({len(results['pages_with_pdfs'])})")
+            st.subheader(
+                f"Pages Containing PDFs "
+                f"({len(results['pages_with_pdfs'])})"
+            )
             if results['pages_with_pdfs']:
-                for page_url, pdfs in sorted(results['pages_with_pdfs'].items()):
-                    with st.expander(f"📄 {page_url} ({len(pdfs)} PDFs)"):
-                        st.markdown(f"**Page:** [{page_url}]({page_url})")
-                        st.markdown(f"**Contains {len(pdfs)} PDF(s):**")
+                for page_url, pdfs in sorted(
+                    results['pages_with_pdfs'].items()
+                ):
+                    with st.expander(
+                        f"📄 {page_url} ({len(pdfs)} PDFs)"
+                    ):
+                        st.markdown(
+                            f"**Page:** [{page_url}]({page_url})"
+                        )
+                        st.markdown(
+                            f"**Contains {len(pdfs)} PDF(s):**"
+                        )
                         for pdf in pdfs:
                             cat = categorize_url(pdf)
-                            st.markdown(f"  ↳ [{pdf}]({pdf})  `{cat}`")
+                            st.markdown(
+                                f"  ↳ [{pdf}]({pdf})  `{cat}`"
+                            )
             else:
                 st.info("No pages with PDFs found")
