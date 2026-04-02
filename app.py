@@ -889,7 +889,7 @@ with st.sidebar:
 
     url_input = st.text_input("Website URL", value="https://")
     depth = st.slider(
-        "Crawl Depth", min_value=1, max_value=5, value=2,
+        "Crawl Depth", min_value=1, max_value=10, value=3,
     )
     concurrent = st.slider(
         "Concurrent Requests", min_value=5, max_value=50, value=30
