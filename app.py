@@ -22,14 +22,8 @@ if 'results' not in st.session_state:
     st.session_state.results = None
 
 # ═══════════════════════════════════════════════════════════════
-# CATEGORY DEFINITIONS — regex patterns, first match wins
-# Out of Scope is always checked first
+# CATEGORY DEFINITIONS
 # ═══════════════════════════════════════════════════════════════
-
-# Each entry: (category_label, [regex_pattern_strings])
-# Patterns are matched against the lowercased full URL
-# re.search() is used so pattern can match anywhere in URL
-
 CATEGORIES = [
     (
         "⛔ Out of Scope", [
@@ -156,23 +150,20 @@ CATEGORIES = [
     ),
 ]
 
-# Pre-compile all patterns once at startup
 COMPILED_CATEGORIES = [
     (label, [re.compile(p, re.IGNORECASE) for p in patterns])
     for label, patterns in CATEGORIES
 ]
 
 # ═══════════════════════════════════════════════════════════════
-# KNOWN JUNK / ACADEMIC EXTERNAL DOMAINS — always dropped
-# unless the URL contains an IR/news keyword
+# EXTERNAL DOMAIN FILTERS
 # ═══════════════════════════════════════════════════════════════
 JUNK_EXTERNAL_DOMAINS = {
-    "doi.org", "dx.doi.org",
-    "ncbi.nlm.nih.gov", "pubmed.ncbi.nlm.nih.gov",
-    "iopscience.iop.org", "link.springer.com", "springer.com",
-    "sciencedirect.com", "pubs.acs.org", "pubs.rsc.org",
-    "onlinelibrary.wiley.com", "nature.com",
-    "wikipedia.org", "en.wikipedia.org",
+    "doi.org", "dx.doi.org", "ncbi.nlm.nih.gov",
+    "pubmed.ncbi.nlm.nih.gov", "iopscience.iop.org",
+    "link.springer.com", "springer.com", "sciencedirect.com",
+    "pubs.acs.org", "pubs.rsc.org", "onlinelibrary.wiley.com",
+    "nature.com", "wikipedia.org", "en.wikipedia.org",
     "scitation.aip.org", "opticsinfobase.org",
     "ingentaconnect.com", "mdpi.com", "jove.com",
     "hal.inria.fr", "scripts.iucr.org",
@@ -189,26 +180,18 @@ EXTERNAL_KEEP_KEYWORDS = [
 
 SEC_FILING_PATTERNS = [
     re.compile(p, re.IGNORECASE) for p in [
-        r"sec\.gov",
-        r"edgar\.sec\.gov",
-        r"/sec[-_]filings?",
-        r"sec[-_]filing",
-        r"secfiling",
-        r"/edgar/",
+        r"sec\.gov", r"edgar\.sec\.gov",
+        r"/sec[-_]filings?", r"sec[-_]filing",
+        r"secfiling", r"/edgar/",
     ]
 ]
 
 
 # ═══════════════════════════════════════════════════════════════
-# HELPER FUNCTIONS
+# CORE HELPERS
 # ═══════════════════════════════════════════════════════════════
 
 def categorize_url(url: str) -> str:
-    """
-    Match URL against compiled category patterns.
-    Out of Scope is index-0 so it's always checked first.
-    First match wins.
-    """
     for label, compiled_patterns in COMPILED_CATEGORIES:
         for pattern in compiled_patterns:
             if pattern.search(url):
@@ -224,23 +207,35 @@ def categorize_all_urls(urls: list) -> dict:
 
 
 def normalize_url(url: str) -> str:
-    """Lowercase netloc, strip trailing slash, strip fragment."""
     p = urlparse(url)
-    path = p.path.rstrip("/")
     return urlunparse((
-        p.scheme, p.netloc.lower(), path,
+        p.scheme, p.netloc.lower(),
+        p.path.rstrip("/"),
         p.params, p.query, ""
     ))
 
 
 def strip_query(url: str) -> str:
-    """Return URL without query string or fragment."""
+    """Return URL with query string and fragment removed."""
     p = urlparse(url)
     return urlunparse((
         p.scheme, p.netloc.lower(),
         p.path.rstrip("/"),
         "", "", ""
     ))
+
+
+def get_path_depth(url: str) -> int:
+    """
+    Return the number of non-empty path segments.
+    https://example.com/           → 0
+    https://example.com/about      → 1
+    https://example.com/about/team → 2
+    """
+    path = urlparse(url).path.strip("/")
+    if not path:
+        return 0
+    return len(path.split("/"))
 
 
 def is_social_media_url(url: str) -> bool:
@@ -267,80 +262,96 @@ def _clean_domain(netloc: str) -> str:
 
 
 def is_same_domain_or_allowed(url: str, base_domain: str) -> bool:
-    """
-    Keep URL if:
-      1. Same domain as crawl target
-      2. Not a known junk domain
-      3. External but has IR/news keyword
-    """
-    parsed = urlparse(url)
-    url_domain = _clean_domain(parsed.netloc)
+    parsed    = urlparse(url)
+    url_dom   = _clean_domain(parsed.netloc)
     base_clean = _clean_domain(base_domain)
 
-    # Rule 1 – same domain or subdomain
-    if url_domain == base_clean or url_domain.endswith("." + base_clean):
+    if url_dom == base_clean or url_dom.endswith("." + base_clean):
         return True
-
-    # Rule 2 – known junk
     for junk in JUNK_EXTERNAL_DOMAINS:
-        if url_domain == junk or url_domain.endswith("." + junk):
+        if url_dom == junk or url_dom.endswith("." + junk):
             return False
-
-    # Rule 3 – external but IR/news
-    url_lower = url.lower()
-    if any(kw in url_lower for kw in EXTERNAL_KEEP_KEYWORDS):
+    if any(kw in url.lower() for kw in EXTERNAL_KEEP_KEYWORDS):
         return True
-
-    # Rule 4 – unknown external → drop
     return False
 
 
 def is_investor_or_media_page(url: str) -> bool:
     kws = ["investor", "press", "media", "news",
            "release", "announcement", "publication"]
-    url_lower = url.lower()
-    return any(k in url_lower for k in kws)
+    return any(k in url.lower() for k in kws)
 
 
 # ═══════════════════════════════════════════════════════════════
 # DEDUPLICATION
-# Two-pass approach:
-#   Pass 1 — strip query strings, deduplicate on path alone
-#   Pass 2 — parent-path suppression
+#
+# The full pipeline:
+#
+#   Step 1 — Strip query strings
+#            page?src=A  +  page?src=B  →  keep one  →  page
+#
+#   Step 2 — Parent-path suppression
+#            If /solutions is in the set, drop /solutions/pageA
+#            because /solutions is a shallower ancestor
+#
+#   Step 3 — Sibling flood detection  ← NEW
+#            At each (domain, parent_path) bucket, if the number
+#            of direct children exceeds SIBLING_THRESHOLD, keep
+#            only the first SIBLING_KEEP of them.
+#            This collapses pages like:
+#              /webinar_request_fluorescence2021
+#              /webinar_request_fluorescence2022
+#              /webinar_request_raman2020
+#              /webinar_request_raman2026
+#            down to a small representative set when there are
+#            too many siblings with no shared parent in the list.
+#
+# SIBLING_THRESHOLD  – how many siblings at one level before
+#                      we start collapsing (default 10)
+# SIBLING_KEEP       – how many to keep after collapsing (default 3)
 # ═══════════════════════════════════════════════════════════════
 
-def deduplicate_urls(urls: list) -> list:
-    """
-    1. Strip query strings → unique (scheme, netloc, path) combos only.
-       Multiple URLs that differ only in ?query are collapsed to one
-       clean URL (no query string).
-    2. Parent-path suppression → if /solutions is in the set,
-       drop /solutions/sub-page, /solutions/sub/sub etc.
-    """
-    # ── Pass 1: strip queries, keep unique paths ──────────────
-    seen_paths: set = set()
-    clean_urls: list = []
+SIBLING_THRESHOLD = 10   # tune via sidebar slider
+SIBLING_KEEP      = 3    # tune via sidebar slider
 
-    for url in sorted(urls):          # sort so shorter paths come first
-        clean = strip_query(url)
-        if clean not in seen_paths:
-            seen_paths.add(clean)
-            clean_urls.append(clean)
 
-    # ── Pass 2: parent-path suppression ──────────────────────
-    # Build a set of (scheme, netloc, path) for quick lookup
-    path_set = set()
-    for u in clean_urls:
+def deduplicate_urls(urls: list,
+                     sibling_threshold: int = SIBLING_THRESHOLD,
+                     sibling_keep: int = SIBLING_KEEP) -> list:
+    """
+    Full deduplication pipeline.
+
+    Step 1 – strip query strings, unique paths only.
+    Step 2 – drop any URL whose direct parent path also exists.
+    Step 3 – if a (domain, parent_path) bucket has more than
+             sibling_threshold children, keep only sibling_keep.
+    """
+
+    # ── Step 1: strip queries ─────────────────────────────────
+    seen: set   = set()
+    clean: list = []
+    for url in sorted(urls):          # sort → shorter paths first
+        c = strip_query(url)
+        if c not in seen:
+            seen.add(c)
+            clean.append(c)
+
+    # ── Step 2: parent-path suppression ──────────────────────
+    # Build lookup of all (scheme, netloc, path) present
+    path_set: set = set()
+    parsed_cache: dict = {}
+    for u in clean:
         p = urlparse(u)
+        parsed_cache[u] = p
         path_set.add((p.scheme, p.netloc, p.path.rstrip("/")))
 
-    result = []
-    for u in clean_urls:
-        p = urlparse(u)
+    after_parent_drop: list = []
+    for u in clean:
+        p     = parsed_cache[u]
         parts = p.path.strip("/").split("/")
         is_child = False
 
-        # Walk up the path tree looking for any shorter ancestor
+        # Walk up: does any strict ancestor exist in our set?
         for depth in range(len(parts) - 1, 0, -1):
             parent_path = "/" + "/".join(parts[:depth])
             if (p.scheme, p.netloc, parent_path) in path_set:
@@ -348,28 +359,55 @@ def deduplicate_urls(urls: list) -> list:
                 break
 
         if not is_child:
-            result.append(u)
+            after_parent_drop.append(u)
 
+    # ── Step 3: sibling flood detection ──────────────────────
+    # Group remaining URLs by (netloc, parent_path)
+    # parent_path = everything except the last path segment
+    #
+    # e.g.  /webinar_request_raman2020  →  parent = ""  (root)
+    #       /solutions/pageA            →  parent = "/solutions"
+    #
+    # If a bucket has > sibling_threshold entries, trim to
+    # sibling_keep (alphabetically first = shortest/earliest)
+
+    buckets: dict = defaultdict(list)
+    for u in after_parent_drop:
+        p      = urlparse(u)
+        parts  = p.path.strip("/").split("/")
+        # parent segment = all parts except last
+        parent = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
+        key    = (p.netloc, parent)
+        buckets[key].append(u)
+
+    result: list = []
+    for key, bucket_urls in buckets.items():
+        if len(bucket_urls) > sibling_threshold:
+            # Keep only the first sibling_keep entries
+            # (list is already sorted from Step 1)
+            result.extend(bucket_urls[:sibling_keep])
+        else:
+            result.extend(bucket_urls)
+
+    # Re-sort for stable output
+    result.sort()
     return result
 
 
 # ═══════════════════════════════════════════════════════════════
-# JSON LINK EXTRACTION
+# JSON EXTRACTION
 # ═══════════════════════════════════════════════════════════════
 
 async def extract_json_links(session, url, pdf_regex):
     json_links: set = set()
-    json_pdfs: set = set()
-
+    json_pdfs:  set = set()
     try:
         async with session.get(
             url, timeout=aiohttp.ClientTimeout(total=10)
         ) as response:
             if response.status != 200:
                 return json_links, json_pdfs
-
             ct = response.headers.get("Content-Type", "").lower()
-
             if "application/json" in ct:
                 try:
                     data = await response.json()
@@ -395,7 +433,6 @@ async def extract_json_links(session, url, pdf_regex):
                         pass
     except Exception:
         pass
-
     return json_links, json_pdfs
 
 
@@ -434,16 +471,17 @@ def _extract_from_json(data, base_url, links, pdfs, pdf_regex):
 
 async def crawl_website(
     start_url, pdf_pattern, max_depth,
-    max_concurrent, progress_callback
+    max_concurrent, progress_callback,
+    sibling_threshold, sibling_keep
 ):
     try:
         if not start_url.startswith(("http://", "https://")):
             start_url = "https://" + start_url
 
-        start_url = normalize_url(start_url)
+        start_url   = normalize_url(start_url)
         base_domain = urlparse(start_url).netloc
+        pdf_regex   = re.compile(pdf_pattern, re.IGNORECASE)
 
-        pdf_regex = re.compile(pdf_pattern, re.IGNORECASE)
         excluded = [
             "javascript:", "mailto:", "tel:",
             "sms:", "fax:", "data:", "#",
@@ -453,27 +491,24 @@ async def crawl_website(
             ".js", ".xml", ".ico", ".svg", ".zip", ".exe",
         }
 
-        visited: set = set()
-        # raw_links stores ALL crawled links (before dedup)
-        # used for PDF hunting inside subpages
-        raw_links: set = set()
-        raw_pdfs: set = set()
+        visited:         set  = set()
+        raw_links:       set  = set()
+        raw_pdfs:        set  = set()
         pages_with_pdfs: dict = {}
-        json_link_count = 0
+        json_link_count: int  = 0
 
-        queue = deque([(start_url, 0)])
+        queue     = deque([(start_url, 0)])
         semaphore = asyncio.Semaphore(max_concurrent)
 
         async def fetch_and_parse(session, url, depth):
             norm = normalize_url(url)
             if norm in visited or depth >= max_depth:
                 return []
-
             visited.add(norm)
             progress_callback(len(visited), len(queue))
 
-            new_urls = []
-            page_pdfs = []
+            new_urls:  list = []
+            page_pdfs: list = []
 
             async with semaphore:
                 try:
@@ -494,15 +529,14 @@ async def crawl_website(
                         for a in soup.find_all("a", href=True):
                             href = a["href"]
                             if any(
-                                href.strip().lower().startswith(p)
-                                for p in excluded
+                                href.strip().lower().startswith(ex)
+                                for ex in excluded
                             ):
                                 continue
 
                             abs_url = normalize_url(
                                 urljoin(url, href)
                             )
-
                             if is_social_media_url(abs_url):
                                 continue
                             if is_sec_filing_url(abs_url):
@@ -511,36 +545,30 @@ async def crawl_website(
                             parsed = urlparse(abs_url)
                             if parsed.scheme not in ("http", "https"):
                                 continue
-
-                            # Skip static assets
-                            path_lower = parsed.path.lower()
                             if any(
-                                path_lower.endswith(ext)
+                                parsed.path.lower().endswith(ext)
                                 for ext in skip_exts
                             ):
                                 continue
-
-                            # Domain filter
                             if not is_same_domain_or_allowed(
                                 abs_url, base_domain
                             ):
                                 continue
 
+                            # Always collect raw (for PDF hunting)
                             raw_links.add(abs_url)
 
                             if pdf_regex.search(abs_url):
                                 raw_pdfs.add(abs_url)
                                 page_pdfs.append(abs_url)
 
-                            # Only follow same-domain links
+                            # Follow only same-domain links
                             if (
                                 parsed.netloc == base_domain
                                 and depth + 1 < max_depth
                                 and abs_url not in visited
                             ):
-                                new_urls.append(
-                                    (abs_url, depth + 1)
-                                )
+                                new_urls.append((abs_url, depth + 1))
 
                         # JSON extraction on IR/media pages
                         if is_investor_or_media_page(norm):
@@ -549,7 +577,6 @@ async def crawl_website(
                             )
                             nonlocal json_link_count
                             json_link_count += len(jlinks)
-
                             for lnk in jlinks:
                                 if (
                                     not is_social_media_url(lnk)
@@ -593,28 +620,29 @@ async def crawl_website(
                     if queue:
                         u, d = queue.popleft()
                         tasks.append(fetch_and_parse(session, u, d))
-
                 for new_urls in await asyncio.gather(*tasks):
                     for nu, nd in new_urls:
                         if normalize_url(nu) not in visited:
                             queue.append((nu, nd))
 
-        # ── Deduplication (query strip + parent suppression) ──
-        deduped_links = deduplicate_urls(sorted(raw_links))
-        deduped_pdfs  = deduplicate_urls(sorted(raw_pdfs))
-
-        # ── Categorisation ────────────────────────────────────
-        categorized       = categorize_all_urls(deduped_links)
-        categorized_pdfs  = categorize_all_urls(deduped_pdfs)
+        # ── Deduplication ─────────────────────────────────────
+        deduped_links = deduplicate_urls(
+            sorted(raw_links), sibling_threshold, sibling_keep
+        )
+        deduped_pdfs = deduplicate_urls(
+            sorted(raw_pdfs), sibling_threshold, sibling_keep
+        )
 
         return {
             "all_links":         deduped_links,
             "pdf_links":         deduped_pdfs,
+            "raw_link_count":    len(raw_links),
+            "raw_pdf_count":     len(raw_pdfs),
             "pages_with_pdfs":   pages_with_pdfs,
             "pages_crawled":     len(visited),
             "json_links_count":  json_link_count,
-            "categorized_links": categorized,
-            "categorized_pdfs":  categorized_pdfs,
+            "categorized_links": categorize_all_urls(deduped_links),
+            "categorized_pdfs":  categorize_all_urls(deduped_pdfs),
         }
 
     except Exception as e:
@@ -627,8 +655,8 @@ async def crawl_website(
 
 st.title("🔗 Website & PDF Link Extractor")
 st.markdown(
-    "**Async Deep Crawler — URL Categorization · "
-    "Query-Strip Deduplication · Parent-Path Suppression**"
+    "**Async Deep Crawler — Regex Categories · "
+    "Query-Strip · Parent Suppression · Sibling Flood Control**"
 )
 
 with st.sidebar:
@@ -640,7 +668,7 @@ with st.sidebar:
     )
     depth = st.slider(
         "Crawl Depth", min_value=1, max_value=5, value=2,
-        help="Crawls to this depth; only parent URLs shown in output"
+        help="Subpages are crawled for PDFs but collapsed in output"
     )
     concurrent = st.slider(
         "Concurrent Requests", min_value=5, max_value=50, value=30
@@ -651,17 +679,34 @@ with st.sidebar:
     )
 
     st.markdown("---")
+    st.markdown("### 🔁 Deduplication Controls")
+
+    sibling_threshold = st.slider(
+        "Sibling Flood Threshold",
+        min_value=3, max_value=50, value=10,
+        help=(
+            "If more than this many sibling URLs share the same "
+            "parent path, collapse them down to 'Keep N' below."
+        )
+    )
+    sibling_keep = st.slider(
+        "Keep N Siblings (after flood)",
+        min_value=1, max_value=10, value=3,
+        help="How many siblings to keep when flood is detected."
+    )
+
+    st.markdown("---")
     st.markdown("### 📂 Categories")
     for label, patterns in CATEGORIES:
         with st.expander(label):
             for p in patterns:
                 st.code(p)
 
-    st.markdown("---")
     st.markdown("### Features")
     st.markdown("""
     ✅ Query-string deduplication  
     ✅ Parent-path suppression  
+    ✅ Sibling flood detection *(new)*  
     ✅ External domain filtering  
     ✅ SEC filing override  
     ✅ Regex-based categorization  
@@ -670,7 +715,7 @@ with st.sidebar:
     """)
 
 
-def sort_key(cat: str):
+def sort_key(cat: str) -> int:
     order = {
         "Presentation": 0, "Reports": 1, "News": 2,
         "Filings": 3, "ESG": 4, "Sector Specific": 5,
@@ -697,7 +742,7 @@ with col1:
                 st.error(f"Invalid regex: {e}")
             else:
                 st.session_state.crawling = True
-                st.session_state.results = None
+                st.session_state.results  = None
 
                 progress_bar = st.progress(0)
                 status_text  = st.empty()
@@ -710,7 +755,9 @@ with col1:
                 with st.spinner("Crawling…"):
                     res = asyncio.run(crawl_website(
                         url_input, pdf_pattern,
-                        depth, concurrent, update_progress
+                        depth, concurrent,
+                        update_progress,
+                        sibling_threshold, sibling_keep,
                     ))
 
                 st.session_state.results  = res
@@ -730,18 +777,31 @@ if st.session_state.results:
     if "error" in res:
         st.error(f"Error: {res['error']}")
     else:
-        cat = res.get("categorized_links", {})
-        n_unclass     = len(cat.get("❓ Unclassified", []))
-        n_oos         = len(cat.get("⛔ Out of Scope", []))
-        n_classified  = len(res["all_links"]) - n_unclass - n_oos
+        cat          = res.get("categorized_links", {})
+        n_unclass    = len(cat.get("❓ Unclassified", []))
+        n_oos        = len(cat.get("⛔ Out of Scope", []))
+        n_classified = len(res["all_links"]) - n_unclass - n_oos
 
-        c1,c2,c3,c4,c5,c6 = st.columns(6)
-        c1.metric("Pages Crawled",  res["pages_crawled"])
-        c2.metric("Total Links",    len(res["all_links"]))
-        c3.metric("PDF Links",      len(res["pdf_links"]))
-        c4.metric("Classified",     n_classified)
-        c5.metric("Unclassified",   n_unclass)
-        c6.metric("Out of Scope",   n_oos)
+        # ── Metrics row ───────────────────────────────────────
+        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(8)
+        c1.metric("Pages Crawled",   res["pages_crawled"])
+        c2.metric("Raw Links",       res["raw_link_count"])
+        c3.metric("After Dedup",     len(res["all_links"]))
+        c4.metric("PDF Links",       len(res["pdf_links"]))
+        c5.metric("Raw PDFs",        res["raw_pdf_count"])
+        c6.metric("Classified",      n_classified)
+        c7.metric("Unclassified",    n_unclass)
+        c8.metric("Out of Scope",    n_oos)
+
+        # Show reduction stats
+        raw   = res["raw_link_count"]
+        dedup = len(res["all_links"])
+        if raw > 0:
+            pct = round((raw - dedup) / raw * 100, 1)
+            st.info(
+                f"🔁 Deduplication removed **{raw - dedup}** URLs "
+                f"({pct}% reduction) — from {raw} raw → {dedup} unique"
+            )
 
         st.markdown("---")
 
@@ -753,21 +813,17 @@ if st.session_state.results:
             "🗂️ Pages with PDFs",
         ])
 
-        # ── Tab 1 ──────────────────────────────────────────
         with tab1:
-            st.subheader(
-                f"All Links ({len(res['all_links'])})"
-            )
+            st.subheader(f"All Links ({len(res['all_links'])})")
             for lnk in res["all_links"]:
                 st.markdown(f"[{lnk}]({lnk})")
             if res["all_links"]:
                 st.download_button(
-                    "📥 Download",
+                    "📥 Download All Links",
                     "\n".join(res["all_links"]),
                     "all_links.txt", "text/plain",
                 )
 
-        # ── Tab 2 ──────────────────────────────────────────
         with tab2:
             st.subheader("🏷️ Links by Category")
             lines = []
@@ -785,7 +841,6 @@ if st.session_state.results:
                     for u in urls:
                         st.markdown(f"- [{u}]({u})")
                         lines.append(u)
-
             st.download_button(
                 "📥 Download Categorized",
                 "\n".join(lines),
@@ -793,11 +848,8 @@ if st.session_state.results:
                 key="dl_cat",
             )
 
-        # ── Tab 3 ──────────────────────────────────────────
         with tab3:
-            st.subheader(
-                f"PDF Links ({len(res['pdf_links'])})"
-            )
+            st.subheader(f"PDF Links ({len(res['pdf_links'])})")
             for lnk in res["pdf_links"]:
                 st.markdown(f"[{lnk}]({lnk})")
             if res["pdf_links"]:
@@ -807,10 +859,9 @@ if st.session_state.results:
                     "pdf_links.txt", "text/plain",
                 )
 
-        # ── Tab 4 ──────────────────────────────────────────
         with tab4:
             st.subheader("📑 PDFs by Category")
-            cpdf = res.get("categorized_pdfs", {})
+            cpdf      = res.get("categorized_pdfs", {})
             pdf_lines = []
             for label in sorted(cpdf.keys(), key=sort_key):
                 urls = cpdf[label]
@@ -826,7 +877,6 @@ if st.session_state.results:
                     for u in urls:
                         st.markdown(f"- [{u}]({u})")
                         pdf_lines.append(u)
-
             if pdf_lines:
                 st.download_button(
                     "📥 Download Categorized PDFs",
@@ -835,11 +885,9 @@ if st.session_state.results:
                     key="dl_cat_pdf",
                 )
 
-        # ── Tab 5 ──────────────────────────────────────────
         with tab5:
             st.subheader(
-                f"Pages with PDFs "
-                f"({len(res['pages_with_pdfs'])})"
+                f"Pages with PDFs ({len(res['pages_with_pdfs'])})"
             )
             for page_url, pdfs in sorted(
                 res["pages_with_pdfs"].items()
