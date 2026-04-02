@@ -159,6 +159,18 @@ PDF_EXTENSION_RE = re.compile(
     r"\.pdf($|\?)|/pdf/|download.*pdf", re.IGNORECASE
 )
 
+CATEGORY_COLOURS = {
+    "Presentation":     "#1f77b4",
+    "Reports":          "#2ca02c",
+    "News":             "#ff7f0e",
+    "Filings":          "#9467bd",
+    "ESG":              "#17becf",
+    "Sector Specific":  "#8c564b",
+    "Company Info":     "#e377c2",
+    "❓ Unclassified":  "#7f7f7f",
+    "⛔ Out of Scope":  "#d62728",
+}
+
 # ═══════════════════════════════════════════════════════════════
 # EXTERNAL DOMAIN FILTERS
 # ═══════════════════════════════════════════════════════════════
@@ -189,21 +201,6 @@ SEC_FILING_PATTERNS = [
         r"secfiling", r"/edgar/",
     ]
 ]
-
-# ═══════════════════════════════════════════════════════════════
-# CATEGORY COLOURS for sitemap badges
-# ═══════════════════════════════════════════════════════════════
-CATEGORY_COLOURS = {
-    "Presentation":     "#1f77b4",
-    "Reports":          "#2ca02c",
-    "News":             "#ff7f0e",
-    "Filings":          "#9467bd",
-    "ESG":              "#17becf",
-    "Sector Specific":  "#8c564b",
-    "Company Info":     "#e377c2",
-    "❓ Unclassified":  "#7f7f7f",
-    "⛔ Out of Scope":  "#d62728",
-}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -350,129 +347,254 @@ def deduplicate_urls(
 
 
 # ═══════════════════════════════════════════════════════════════
-# SITEMAP BUILDER
-# Builds a nested dict tree from the deduplicated HTML page list
-# then renders it as an indented Streamlit tree
+# SITEMAP HELPERS
+# Flat rendering — no nested expanders
 # ═══════════════════════════════════════════════════════════════
 
-def build_tree(urls: list) -> dict:
+def build_flat_sitemap(urls: list) -> list:
     """
-    Convert flat URL list into nested dict tree keyed by path segments.
+    Convert URL list into a flat list of dicts sorted by path,
+    each entry carrying depth, label, full url, category.
 
     Example output:
-    {
-      "scientific.us.horiba.com": {
-        "__url__": "https://scientific.us.horiba.com",
-        "about": {
-          "__url__": "https://scientific.us.horiba.com/about",
-          "team": {
-            "__url__": "https://scientific.us.horiba.com/about/team"
-          }
-        }
-      }
-    }
+    [
+      {"depth":0, "label":"example.com",  "url":"https://example.com", "cat":"...", "has_children": True},
+      {"depth":1, "label":"about",        "url":"https://example.com/about", ...},
+      {"depth":2, "label":"team",         "url":"https://example.com/about/team", ...},
+    ]
     """
-    tree: dict = {}
+    if not urls:
+        return []
 
+    # Build nested dict tree first (for has_children detection)
+    tree: dict = {}
     for url in sorted(urls):
-        p      = urlparse(url)
-        # Build node path: [netloc, seg1, seg2, ...]
-        parts  = [p.netloc] + [
-            seg for seg in p.path.strip("/").split("/") if seg
+        p     = urlparse(url)
+        parts = [p.netloc] + [
+            s for s in p.path.strip("/").split("/") if s
         ]
         node = tree
         for part in parts:
             if part not in node:
-                node[part] = {}
-            node = node[part]
-        # Store the full URL at leaf/node
-        node["__url__"] = url
+                node[part] = {"__children__": {}}
+            node = node[part]["__children__"]
+        # store url on the parent node
+        # walk back — simpler to tag via second pass
+    
+    # Build flat list via iterative DFS
+    flat:  list  = []
+    stack: list  = []   # (node_dict, label, depth, url_prefix)
+
+    # Seed with root domains
+    for root_label in sorted(tree.keys()):
+        stack.append((tree[root_label], root_label, 0, ""))
+
+    # We need the actual full URLs — build a lookup
+    url_lookup: dict = {}
+    for url in urls:
+        p     = urlparse(url)
+        parts = [p.netloc] + [
+            s for s in p.path.strip("/").split("/") if s
+        ]
+        key = tuple(parts)
+        url_lookup[key] = url
+
+    def _walk(node_dict, label, depth, path_parts):
+        """Iterative-friendly recursive walk — depth limited."""
+        full_key = tuple(path_parts)
+        url      = url_lookup.get(full_key, "")
+        children = node_dict.get("__children__", {})
+        cat      = categorize_url(url) if url else ""
+
+        flat.append({
+            "depth":        depth,
+            "label":        label,
+            "url":          url,
+            "cat":          cat,
+            "has_children": bool(children),
+        })
+
+        for child_label in sorted(children.keys()):
+            _walk(
+                children[child_label],
+                child_label,
+                depth + 1,
+                path_parts + [child_label],
+            )
+
+    for root_label in sorted(tree.keys()):
+        _walk(tree[root_label], root_label, 0, [root_label])
+
+    return flat
+
+
+def build_tree_for_lookup(urls: list) -> dict:
+    """
+    Build nested dict:
+    { netloc: { "__children__": { seg: { "__children__": {...} } } } }
+    also stores __url__ at each node.
+    """
+    tree: dict = {}
+    for url in sorted(urls):
+        p     = urlparse(url)
+        parts = [p.netloc] + [
+            s for s in p.path.strip("/").split("/") if s
+        ]
+        node = tree
+        for part in parts:
+            if part not in node:
+                node[part] = {"__children__": {}, "__url__": ""}
+            node = node[part]["__children__"]
+
+    # Second pass — tag URLs
+    for url in urls:
+        p     = urlparse(url)
+        parts = [p.netloc] + [
+            s for s in p.path.strip("/").split("/") if s
+        ]
+        node = tree
+        for i, part in enumerate(parts):
+            if i == len(parts) - 1:
+                node[part]["__url__"] = url
+            node = node[part]["__children__"]
 
     return tree
 
 
-def render_tree(
-    node: dict,
-    label: str,
-    depth: int = 0,
-    max_auto_expand: int = 1,
+def render_flat_sitemap(
+    urls: list,
+    max_depth_show: int = 99,
 ) -> list:
     """
-    Recursively render a tree node as Streamlit expanders + markdown.
-    Returns lines for text download.
+    Render sitemap as flat indented HTML rows — NO nested expanders.
+    Returns download lines.
+    Uses st.markdown row-by-row with indentation via &nbsp;
+    Rows deeper than max_depth_show are hidden via a
+    per-depth-group expander (one level of expander max).
     """
-    download_lines = []
+    if not urls:
+        st.info("No pages to display.")
+        return []
 
-    # Separate children from the special __url__ key
-    children = {k: v for k, v in node.items() if k != "__url__"}
-    url      = node.get("__url__", "")
-    cat      = categorize_url(url) if url else ""
-    colour   = CATEGORY_COLOURS.get(cat, "#7f7f7f")
+    tree       = build_tree_for_lookup(urls)
+    flat_rows  = []   # (depth, label, url, cat)
+    dl_lines   = []
 
-    indent   = "&nbsp;" * 4 * depth
-    icon     = "🌐" if depth == 0 else ("📄" if not children else "📂")
+    def _walk(node_dict, label, depth, path_parts):
+        url = node_dict.get("__url__", "")
+        cat = categorize_url(url) if url else ""
+        flat_rows.append((depth, label, url, cat))
+        children = node_dict.get("__children__", {})
+        for child_label in sorted(children.keys()):
+            _walk(
+                children[child_label],
+                child_label,
+                depth + 1,
+                path_parts + [child_label],
+            )
 
-    # Badge HTML
-    badge = (
-        f'<span style="background:{colour};color:white;'
-        f'padding:1px 6px;border-radius:4px;'
-        f'font-size:0.7em;">{cat}</span>'
-        if cat else ""
-    )
+    for root_label in sorted(tree.keys()):
+        _walk(tree[root_label], root_label, 0, [root_label])
 
-    if url:
-        label_md = (
-            f"{indent}{icon} "
-            f'<a href="{url}" target="_blank">{label}</a> {badge}'
+    # ── Render ────────────────────────────────────────────────
+    # Rows within max_depth_show render directly.
+    # Rows beyond are batched per parent into a single expander
+    # (one expander level — no nesting).
+
+    # Group rows: "visible" (depth <= max_depth_show) render inline;
+    # overflow rows are collected then shown in ONE expander per parent.
+
+    html_rows_visible  = []
+    overflow_groups    = defaultdict(list)  # parent_label → rows
+
+    for depth, label, url, cat in flat_rows:
+        colour = CATEGORY_COLOURS.get(cat, "#7f7f7f")
+        indent = "&nbsp;" * 6 * depth
+        icon   = (
+            "🌐" if depth == 0
+            else ("📂" if any(
+                r[0] == depth + 1
+                for r in flat_rows
+                if r[1] != label
+            ) else "📄")
         )
-    else:
-        label_md = f"{indent}{icon} **{label}**"
+        # Simpler icon logic
+        icon = "🌐" if depth == 0 else "📄"
 
-    download_lines.append("  " * depth + f"{label} — {url}")
+        badge = (
+            f'<span style="background:{colour};color:white;'
+            f'padding:1px 5px;border-radius:3px;'
+            f'font-size:0.7em;margin-left:4px;">{cat}</span>'
+            if cat else ""
+        )
 
-    if children:
-        expanded = depth < max_auto_expand
-        with st.expander(
-            f"{'  ' * depth}{icon} {label} "
-            f"({len(children)} child{'ren' if len(children)!=1 else ''})",
-            expanded=expanded,
-        ):
-            # Show the node's own URL at the top of expander
-            if url:
-                st.markdown(label_md, unsafe_allow_html=True)
+        if url:
+            row_html = (
+                f'{indent}{icon} '
+                f'<a href="{url}" target="_blank">'
+                f'<code>{label}</code></a>{badge}'
+            )
+        else:
+            row_html = f'{indent}{icon} <strong>{label}</strong>'
 
-            for child_label in sorted(children.keys()):
-                child_node = children[child_label]
-                child_lines = render_tree(
-                    child_node, child_label,
-                    depth + 1, max_auto_expand
+        dl_lines.append("  " * depth + f"{label}  {url}  [{cat}]")
+
+        if depth <= max_depth_show:
+            html_rows_visible.append(row_html)
+        else:
+            # Find nearest visible ancestor label
+            ancestor = next(
+                (
+                    r[1] for r in reversed(flat_rows[
+                        :flat_rows.index((depth, label, url, cat))
+                    ])
+                    if r[0] == max_depth_show
+                ),
+                "Other"
+            )
+            overflow_groups[ancestor].append(row_html)
+
+    # Render visible rows as one markdown block
+    if html_rows_visible:
+        st.markdown(
+            "<br>".join(html_rows_visible),
+            unsafe_allow_html=True,
+        )
+
+    # Render overflow groups — ONE expander per ancestor group
+    if overflow_groups:
+        st.markdown("---")
+        st.markdown(
+            f"*Pages deeper than depth {max_depth_show}:*"
+        )
+        for ancestor_label, rows in sorted(overflow_groups.items()):
+            with st.expander(
+                f"📂 Children of '{ancestor_label}' "
+                f"({len(rows)} pages)",
+                expanded=False,
+            ):
+                st.markdown(
+                    "<br>".join(rows),
+                    unsafe_allow_html=True,
                 )
-                download_lines.extend(child_lines)
-    else:
-        # Leaf node — just render inline
-        st.markdown(label_md, unsafe_allow_html=True)
 
-    return download_lines
+    return dl_lines
 
 
 def build_sitemap_text(urls: list) -> str:
-    """
-    Build a plain-text indented sitemap for download.
-    """
+    """Plain-text indented sitemap for download."""
     lines = ["SITEMAP", "=" * 60, ""]
-    tree  = build_tree(urls)
+    tree  = build_tree_for_lookup(urls)
 
-    def _walk(node, label, depth):
-        url = node.get("__url__", "")
-        cat = categorize_url(url) if url else ""
+    def _walk(node_dict, label, depth):
+        url    = node_dict.get("__url__", "")
+        cat    = categorize_url(url) if url else ""
         indent = "  " * depth
-        icon   = "🌐" if depth == 0 else (
-            "📂" if any(k != "__url__" for k in node) else "📄"
-        )
+        icon   = "🌐" if depth == 0 else "📄"
         lines.append(f"{indent}{icon} {label}")
         if url:
             lines.append(f"{indent}   → {url}  [{cat}]")
-        children = {k: v for k, v in node.items() if k != "__url__"}
+        children = node_dict.get("__children__", {})
         for child_label in sorted(children.keys()):
             _walk(children[child_label], child_label, depth + 1)
 
@@ -765,9 +887,7 @@ st.markdown(
 with st.sidebar:
     st.header("⚙️ Settings")
 
-    url_input = st.text_input(
-        "Website URL", value="https://",
-    )
+    url_input = st.text_input("Website URL", value="https://")
     depth = st.slider(
         "Crawl Depth", min_value=1, max_value=5, value=2,
     )
@@ -785,10 +905,6 @@ with st.sidebar:
     enable_sibling_flood = st.toggle(
         "Enable Sibling Flood Control",
         value=False,
-        help=(
-            "When ON: collapse sibling URL floods to N reps. "
-            "OFF by default."
-        )
     )
     sibling_threshold = st.slider(
         "Sibling Flood Threshold",
@@ -819,7 +935,6 @@ def sort_key(cat: str) -> int:
     return order.get(cat, 7)
 
 
-# ── Main buttons ──────────────────────────────────────────────
 col1, col2 = st.columns([3, 1])
 
 with col1:
@@ -868,7 +983,7 @@ with col2:
 
 
 # ═══════════════════════════════════════════════════════════════
-# RESULTS DISPLAY
+# RESULTS
 # ═══════════════════════════════════════════════════════════════
 if st.session_state.results:
     res = st.session_state.results
@@ -881,7 +996,6 @@ if st.session_state.results:
         n_oos        = len(cat_pages.get("⛔ Out of Scope", []))
         n_classified = len(res["all_pages"]) - n_unclass - n_oos
 
-        # ── Metrics ───────────────────────────────────────────
         c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
         c1.metric("Pages Crawled",  res["pages_crawled"])
         c2.metric("Raw Pages",      res["raw_page_count"])
@@ -896,13 +1010,12 @@ if st.session_state.results:
         if raw > 0:
             pct = round((raw - dedup) / raw * 100, 1)
             st.info(
-                f"🔁 Deduplication: {raw} raw pages → "
+                f"🔁 Deduplication: {raw} raw → "
                 f"{dedup} unique ({pct}% reduction)"
             )
 
         st.markdown("---")
 
-        # ── 5 Tabs (4 original + Sitemap) ─────────────────────
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📄 All Pages",
             "🏷️ Categorized Pages",
@@ -911,14 +1024,9 @@ if st.session_state.results:
             "🗺️ Sitemap",
         ])
 
-        # ── Tab 1: All HTML pages ─────────────────────────────
         with tab1:
             st.subheader(
-                f"All Pages — HTML only ({len(res['all_pages'])})"
-            )
-            st.caption(
-                "Deduplicated HTML pages only. "
-                "PDFs are in the Categorized PDFs tab."
+                f"All Pages ({len(res['all_pages'])})"
             )
             for lnk in res["all_pages"]:
                 st.markdown(f"[{lnk}]({lnk})")
@@ -929,7 +1037,6 @@ if st.session_state.results:
                     "all_pages.txt", "text/plain",
                 )
 
-        # ── Tab 2: Categorized HTML pages ─────────────────────
         with tab2:
             st.subheader("🏷️ Pages by Category")
             lines = []
@@ -954,13 +1061,8 @@ if st.session_state.results:
                 key="dl_cat_pages",
             )
 
-        # ── Tab 3: Categorized PDFs ───────────────────────────
         with tab3:
             st.subheader("📑 PDFs by Category")
-            st.caption(
-                f"All {len(res['all_pdfs'])} PDFs found "
-                "during crawl, grouped by category."
-            )
             cat_pdfs  = res.get("categorized_pdfs", {})
             pdf_lines = []
             for label in sorted(cat_pdfs.keys(), key=sort_key):
@@ -985,34 +1087,29 @@ if st.session_state.results:
                     key="dl_cat_pdf",
                 )
 
-        # ── Tab 4: Pages with PDFs by category ────────────────
         with tab4:
             ppbc = res.get("pages_pdfs_by_category", {})
-            total_pages_with_pdf = sum(
-                len(pages) for pages in ppbc.values()
-            )
+            total_pwp = sum(len(v) for v in ppbc.values())
             st.subheader(
-                f"🗂️ Pages with PDFs — by Category "
-                f"({total_pages_with_pdf} pages)"
+                f"🗂️ Pages with PDFs by Category ({total_pwp})"
             )
             if ppbc:
                 report_lines = []
                 for cat_label in sorted(ppbc.keys(), key=sort_key):
-                    pages_dict = ppbc[cat_label]
-                    total_pdfs_in_cat = sum(
+                    pages_dict     = ppbc[cat_label]
+                    total_pdfs_cat = sum(
                         len(v) for v in pages_dict.values()
                     )
                     report_lines += [
                         f"\n{'='*60}",
-                        f"{cat_label}  "
-                        f"({len(pages_dict)} pages, "
-                        f"{total_pdfs_in_cat} PDFs)",
+                        f"{cat_label} ({len(pages_dict)} pages, "
+                        f"{total_pdfs_cat} PDFs)",
                         f"{'='*60}",
                     ]
                     with st.expander(
                         f"📂 {cat_label} — "
                         f"{len(pages_dict)} page(s), "
-                        f"{total_pdfs_in_cat} PDF(s)",
+                        f"{total_pdfs_cat} PDF(s)",
                         expanded=False,
                     ):
                         for page_url, pdfs in sorted(
@@ -1024,9 +1121,8 @@ if st.session_state.results:
                             for pdf in pdfs:
                                 pdf_cat = categorize_url(pdf)
                                 st.markdown(
-                                    f"&nbsp;&nbsp;&nbsp;↳ "
-                                    f"[{pdf}]({pdf})  "
-                                    f"`{pdf_cat}`"
+                                    f"&nbsp;&nbsp;↳ [{pdf}]({pdf})"
+                                    f"  `{pdf_cat}`"
                                 )
                                 report_lines.append(
                                     f"  PAGE: {page_url}"
@@ -1047,52 +1143,44 @@ if st.session_state.results:
         # ── Tab 5: Sitemap ────────────────────────────────────
         with tab5:
             st.subheader(
-                f"🗺️ Site Map — {len(res['all_pages'])} pages"
-            )
-            st.caption(
-                "Tree view of all deduplicated HTML pages. "
-                "Coloured badges show category. "
-                "Click any link to open the page."
+                f"🗺️ Sitemap — {len(res['all_pages'])} pages"
             )
 
-            # Legend
-            st.markdown("**Category Legend:**")
-            legend_cols = st.columns(len(CATEGORY_COLOURS))
-            for idx, (cat_name, colour) in enumerate(
-                CATEGORY_COLOURS.items()
-            ):
-                legend_cols[idx].markdown(
-                    f'<span style="background:{colour};color:white;'
-                    f'padding:2px 8px;border-radius:4px;'
-                    f'font-size:0.75em;">{cat_name}</span>',
-                    unsafe_allow_html=True,
-                )
-
+            # ── Legend ────────────────────────────────────────
+            st.markdown("**Category colour legend:**")
+            legend_html = " &nbsp; ".join(
+                f'<span style="background:{col};color:white;'
+                f'padding:2px 8px;border-radius:4px;'
+                f'font-size:0.75em;">{name}</span>'
+                for name, col in CATEGORY_COLOURS.items()
+            )
+            st.markdown(legend_html, unsafe_allow_html=True)
             st.markdown("---")
 
-            # Depth filter
-            max_depth_show = st.slider(
-                "Show tree up to depth",
-                min_value=1, max_value=6, value=3,
-                key="sitemap_depth",
-                help=(
-                    "Controls how many levels are auto-expanded. "
-                    "Deeper levels still accessible via expanders."
+            # ── Controls ──────────────────────────────────────
+            sm_col1, sm_col2 = st.columns([1, 2])
+            with sm_col1:
+                max_depth_show = st.slider(
+                    "Auto-show up to depth",
+                    min_value=1, max_value=8, value=3,
+                    key="sitemap_depth",
+                    help=(
+                        "Rows at this depth and shallower render "
+                        "directly. Deeper rows appear in a single "
+                        "expander per parent group."
+                    )
                 )
-            )
+            with sm_col2:
+                all_cats_sm = sorted(
+                    set(categorize_url(u) for u in res["all_pages"])
+                )
+                selected_cats = st.multiselect(
+                    "Filter by category (empty = show all)",
+                    options=all_cats_sm,
+                    default=[],
+                    key="sitemap_cat_filter",
+                )
 
-            # Filter by category
-            all_cats = sorted(
-                set(categorize_url(u) for u in res["all_pages"])
-            )
-            selected_cats = st.multiselect(
-                "Filter by category (empty = show all)",
-                options=all_cats,
-                default=[],
-                key="sitemap_cat_filter",
-            )
-
-            # Apply category filter
             pages_to_map = res["all_pages"]
             if selected_cats:
                 pages_to_map = [
@@ -1100,29 +1188,20 @@ if st.session_state.results:
                     if categorize_url(u) in selected_cats
                 ]
 
-            st.markdown(
-                f"*Showing **{len(pages_to_map)}** pages*"
-            )
+            st.caption(f"Showing {len(pages_to_map)} pages")
             st.markdown("---")
 
             if pages_to_map:
-                tree = build_tree(pages_to_map)
-                all_dl_lines = ["SITEMAP", "=" * 60, ""]
-
-                for root_label in sorted(tree.keys()):
-                    root_node = tree[root_label]
-                    dl_lines  = render_tree(
-                        root_node,
-                        root_label,
-                        depth=0,
-                        max_auto_expand=max_depth_show,
-                    )
-                    all_dl_lines.extend(dl_lines)
+                # Render flat sitemap (no nested expanders)
+                dl_lines = render_flat_sitemap(
+                    pages_to_map,
+                    max_depth_show=max_depth_show,
+                )
 
                 st.markdown("---")
                 st.download_button(
-                    "📥 Download Sitemap (text)",
-                    "\n".join(all_dl_lines),
+                    "📥 Download Sitemap",
+                    build_sitemap_text(pages_to_map),
                     "sitemap.txt", "text/plain",
                     key="dl_sitemap",
                 )
