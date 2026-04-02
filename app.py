@@ -155,7 +155,6 @@ COMPILED_CATEGORIES = [
     for label, patterns in CATEGORIES
 ]
 
-# PDF extension pattern — used to separate HTML pages from PDFs
 PDF_EXTENSION_RE = re.compile(
     r"\.pdf($|\?)|/pdf/|download.*pdf", re.IGNORECASE
 )
@@ -191,18 +190,31 @@ SEC_FILING_PATTERNS = [
     ]
 ]
 
+# ═══════════════════════════════════════════════════════════════
+# CATEGORY COLOURS for sitemap badges
+# ═══════════════════════════════════════════════════════════════
+CATEGORY_COLOURS = {
+    "Presentation":     "#1f77b4",
+    "Reports":          "#2ca02c",
+    "News":             "#ff7f0e",
+    "Filings":          "#9467bd",
+    "ESG":              "#17becf",
+    "Sector Specific":  "#8c564b",
+    "Company Info":     "#e377c2",
+    "❓ Unclassified":  "#7f7f7f",
+    "⛔ Out of Scope":  "#d62728",
+}
+
 
 # ═══════════════════════════════════════════════════════════════
 # CORE HELPERS
 # ═══════════════════════════════════════════════════════════════
 
 def is_pdf_url(url: str) -> bool:
-    """Return True if the URL points to a PDF (not an HTML page)."""
     return bool(PDF_EXTENSION_RE.search(url))
 
 
 def categorize_url(url: str) -> str:
-    """First match wins. Out of Scope is always index 0."""
     for label, compiled_patterns in COMPILED_CATEGORIES:
         for pattern in compiled_patterns:
             if pattern.search(url):
@@ -227,7 +239,6 @@ def normalize_url(url: str) -> str:
 
 
 def strip_query(url: str) -> str:
-    """Remove query string and fragment, lowercase netloc."""
     p = urlparse(url)
     return urlunparse((
         p.scheme, p.netloc.lower(),
@@ -277,16 +288,6 @@ def is_investor_or_media_page(url: str) -> bool:
 
 # ═══════════════════════════════════════════════════════════════
 # DEDUPLICATION
-#
-# Step 1 — Strip query strings
-#           page?src=A + page?src=B → one entry → page
-#
-# Step 2 — Parent-path suppression
-#           /solutions exists → drop /solutions/pageA
-#
-# Step 3 — Sibling flood (OPTIONAL, off by default)
-#           If > threshold siblings share same parent bucket,
-#           keep only first N
 # ═══════════════════════════════════════════════════════════════
 
 def deduplicate_urls(
@@ -295,22 +296,16 @@ def deduplicate_urls(
     sibling_threshold: int = 10,
     sibling_keep: int = 3,
 ) -> list:
-    """
-    Step 1: Strip query strings → unique paths only.
-    Step 2: Parent-path suppression.
-    Step 3: Sibling flood control (optional).
-    """
-
-    # ── Step 1: strip queries ─────────────────────────────────
+    # Step 1: strip queries
     seen:  set  = set()
     clean: list = []
-    for url in sorted(urls):          # sort → shorter paths first
+    for url in sorted(urls):
         c = strip_query(url)
         if c not in seen:
             seen.add(c)
             clean.append(c)
 
-    # ── Step 2: parent-path suppression ──────────────────────
+    # Step 2: parent-path suppression
     path_set:     set  = set()
     parsed_cache: dict = {}
     for u in clean:
@@ -331,7 +326,7 @@ def deduplicate_urls(
         if not is_child:
             after_parent.append(u)
 
-    # ── Step 3: sibling flood (optional) ─────────────────────
+    # Step 3: sibling flood (optional)
     if not enable_sibling_flood:
         after_parent.sort()
         return after_parent
@@ -352,6 +347,139 @@ def deduplicate_urls(
 
     result.sort()
     return result
+
+
+# ═══════════════════════════════════════════════════════════════
+# SITEMAP BUILDER
+# Builds a nested dict tree from the deduplicated HTML page list
+# then renders it as an indented Streamlit tree
+# ═══════════════════════════════════════════════════════════════
+
+def build_tree(urls: list) -> dict:
+    """
+    Convert flat URL list into nested dict tree keyed by path segments.
+
+    Example output:
+    {
+      "scientific.us.horiba.com": {
+        "__url__": "https://scientific.us.horiba.com",
+        "about": {
+          "__url__": "https://scientific.us.horiba.com/about",
+          "team": {
+            "__url__": "https://scientific.us.horiba.com/about/team"
+          }
+        }
+      }
+    }
+    """
+    tree: dict = {}
+
+    for url in sorted(urls):
+        p      = urlparse(url)
+        # Build node path: [netloc, seg1, seg2, ...]
+        parts  = [p.netloc] + [
+            seg for seg in p.path.strip("/").split("/") if seg
+        ]
+        node = tree
+        for part in parts:
+            if part not in node:
+                node[part] = {}
+            node = node[part]
+        # Store the full URL at leaf/node
+        node["__url__"] = url
+
+    return tree
+
+
+def render_tree(
+    node: dict,
+    label: str,
+    depth: int = 0,
+    max_auto_expand: int = 1,
+) -> list:
+    """
+    Recursively render a tree node as Streamlit expanders + markdown.
+    Returns lines for text download.
+    """
+    download_lines = []
+
+    # Separate children from the special __url__ key
+    children = {k: v for k, v in node.items() if k != "__url__"}
+    url      = node.get("__url__", "")
+    cat      = categorize_url(url) if url else ""
+    colour   = CATEGORY_COLOURS.get(cat, "#7f7f7f")
+
+    indent   = "&nbsp;" * 4 * depth
+    icon     = "🌐" if depth == 0 else ("📄" if not children else "📂")
+
+    # Badge HTML
+    badge = (
+        f'<span style="background:{colour};color:white;'
+        f'padding:1px 6px;border-radius:4px;'
+        f'font-size:0.7em;">{cat}</span>'
+        if cat else ""
+    )
+
+    if url:
+        label_md = (
+            f"{indent}{icon} "
+            f'<a href="{url}" target="_blank">{label}</a> {badge}'
+        )
+    else:
+        label_md = f"{indent}{icon} **{label}**"
+
+    download_lines.append("  " * depth + f"{label} — {url}")
+
+    if children:
+        expanded = depth < max_auto_expand
+        with st.expander(
+            f"{'  ' * depth}{icon} {label} "
+            f"({len(children)} child{'ren' if len(children)!=1 else ''})",
+            expanded=expanded,
+        ):
+            # Show the node's own URL at the top of expander
+            if url:
+                st.markdown(label_md, unsafe_allow_html=True)
+
+            for child_label in sorted(children.keys()):
+                child_node = children[child_label]
+                child_lines = render_tree(
+                    child_node, child_label,
+                    depth + 1, max_auto_expand
+                )
+                download_lines.extend(child_lines)
+    else:
+        # Leaf node — just render inline
+        st.markdown(label_md, unsafe_allow_html=True)
+
+    return download_lines
+
+
+def build_sitemap_text(urls: list) -> str:
+    """
+    Build a plain-text indented sitemap for download.
+    """
+    lines = ["SITEMAP", "=" * 60, ""]
+    tree  = build_tree(urls)
+
+    def _walk(node, label, depth):
+        url = node.get("__url__", "")
+        cat = categorize_url(url) if url else ""
+        indent = "  " * depth
+        icon   = "🌐" if depth == 0 else (
+            "📂" if any(k != "__url__" for k in node) else "📄"
+        )
+        lines.append(f"{indent}{icon} {label}")
+        if url:
+            lines.append(f"{indent}   → {url}  [{cat}]")
+        children = {k: v for k, v in node.items() if k != "__url__"}
+        for child_label in sorted(children.keys()):
+            _walk(children[child_label], child_label, depth + 1)
+
+    for root_label in sorted(tree.keys()):
+        _walk(tree[root_label], root_label, 0)
+
+    return "\n".join(lines)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -452,10 +580,8 @@ async def crawl_website(
         }
 
         visited:         set  = set()
-        # Separate raw HTML pages from raw PDFs during crawl
-        raw_pages:       set  = set()   # HTML pages only
-        raw_pdfs:        set  = set()   # PDF links only
-        # Map: html_page_url → [pdf_urls found on that page]
+        raw_pages:       set  = set()
+        raw_pdfs:        set  = set()
         pages_with_pdfs: dict = {}
         json_link_count: int  = 0
 
@@ -517,13 +643,11 @@ async def crawl_website(
                             ):
                                 continue
 
-                            # ── Separate PDFs from HTML pages ──
                             if is_pdf_url(abs_url):
                                 raw_pdfs.add(abs_url)
                                 page_pdfs.append(abs_url)
                             else:
                                 raw_pages.add(abs_url)
-                                # Follow only HTML same-domain links
                                 if (
                                     parsed.netloc == base_domain
                                     and depth + 1 < max_depth
@@ -533,7 +657,6 @@ async def crawl_website(
                                         (abs_url, depth + 1)
                                     )
 
-                        # JSON extraction on IR/media pages
                         if is_investor_or_media_page(norm):
                             jlinks, jpdfs = await extract_json_links(
                                 session, url, pdf_regex
@@ -562,7 +685,6 @@ async def crawl_website(
                                     raw_pdfs.add(lnk)
                                     page_pdfs.append(lnk)
 
-                        # Record which page contained which PDFs
                         if page_pdfs:
                             if norm not in pages_with_pdfs:
                                 pages_with_pdfs[norm] = set()
@@ -593,51 +715,35 @@ async def crawl_website(
                         if normalize_url(nu) not in visited:
                             queue.append((nu, nd))
 
-        # ── Deduplication on HTML pages only ─────────────────
-        # PDFs are NOT deduplicated — we want every PDF found
         deduped_pages = deduplicate_urls(
             sorted(raw_pages),
             enable_sibling_flood=enable_sibling_flood,
             sibling_threshold=sibling_threshold,
             sibling_keep=sibling_keep,
         )
-        all_pdfs = sorted(raw_pdfs)   # full list, no dedup
+        all_pdfs = sorted(raw_pdfs)
 
-        # ── pages_with_pdfs: convert sets → sorted lists ─────
         pages_with_pdfs_clean = {
             page: sorted(pdfs)
             for page, pdfs in pages_with_pdfs.items()
         }
 
-        # ── Categorize ────────────────────────────────────────
         categorized_pages = categorize_all_urls(deduped_pages)
         categorized_pdfs  = categorize_all_urls(all_pdfs)
 
-        # ── Pages-with-PDFs grouped by page category ─────────
-        # Structure:
-        # {
-        #   "Reports": {
-        #       "https://example.com/reports": ["pdf1.pdf", ...]
-        #   },
-        #   ...
-        # }
         pages_pdfs_by_category: dict = defaultdict(dict)
         for page_url, pdfs in pages_with_pdfs_clean.items():
             page_cat = categorize_url(page_url)
             pages_pdfs_by_category[page_cat][page_url] = pdfs
 
         return {
-            # HTML pages (deduplicated)
             "all_pages":               deduped_pages,
             "raw_page_count":          len(raw_pages),
-            # PDFs (full, no dedup)
             "all_pdfs":                all_pdfs,
             "raw_pdf_count":           len(raw_pdfs),
-            # Categorized
             "categorized_pages":       categorized_pages,
             "categorized_pdfs":        categorized_pdfs,
             "pages_pdfs_by_category":  dict(pages_pdfs_by_category),
-            # Meta
             "pages_crawled":           len(visited),
             "json_links_count":        json_link_count,
         }
@@ -653,7 +759,7 @@ async def crawl_website(
 st.title("🔗 Website & PDF Link Extractor")
 st.markdown(
     "**Async Deep Crawler — Regex Categories · "
-    "Query-Strip · Parent Suppression · Optional Sibling Flood**"
+    "Query-Strip · Parent Suppression · Sitemap View**"
 )
 
 with st.sidebar:
@@ -661,11 +767,9 @@ with st.sidebar:
 
     url_input = st.text_input(
         "Website URL", value="https://",
-        help="Enter the website URL to crawl"
     )
     depth = st.slider(
         "Crawl Depth", min_value=1, max_value=5, value=2,
-        help="Subpages crawled for PDFs; only parents shown in output"
     )
     concurrent = st.slider(
         "Concurrent Requests", min_value=5, max_value=50, value=30
@@ -682,23 +786,19 @@ with st.sidebar:
         "Enable Sibling Flood Control",
         value=False,
         help=(
-            "When ON: if too many sibling URLs share the same "
-            "parent path, collapse them to N representatives. "
-            "OFF by default — turn on only if results are too noisy."
+            "When ON: collapse sibling URL floods to N reps. "
+            "OFF by default."
         )
     )
-
     sibling_threshold = st.slider(
         "Sibling Flood Threshold",
         min_value=3, max_value=50, value=10,
         disabled=not enable_sibling_flood,
-        help="Collapse siblings when count exceeds this number."
     )
     sibling_keep = st.slider(
         "Keep N Siblings After Flood",
         min_value=1, max_value=10, value=3,
         disabled=not enable_sibling_flood,
-        help="How many siblings to keep after collapsing."
     )
 
     st.markdown("---")
@@ -707,20 +807,6 @@ with st.sidebar:
         with st.expander(label):
             for p in patterns:
                 st.code(p)
-
-    st.markdown("---")
-    st.markdown("### Features")
-    st.markdown("""
-    ✅ HTML pages & PDFs tracked separately  
-    ✅ Query-string deduplication  
-    ✅ Parent-path suppression  
-    ✅ Sibling flood *(optional toggle)*  
-    ✅ External domain filtering  
-    ✅ SEC filing override  
-    ✅ Regex-based categorization  
-    ✅ Social media filter  
-    ✅ JSON link extraction  
-    """)
 
 
 def sort_key(cat: str) -> int:
@@ -816,15 +902,16 @@ if st.session_state.results:
 
         st.markdown("---")
 
-        # ── 4 Tabs ────────────────────────────────────────────
-        tab1, tab2, tab3, tab4 = st.tabs([
+        # ── 5 Tabs (4 original + Sitemap) ─────────────────────
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📄 All Pages",
             "🏷️ Categorized Pages",
             "📑 Categorized PDFs",
             "🗂️ Pages with PDFs",
+            "🗺️ Sitemap",
         ])
 
-        # ── Tab 1: All HTML pages (flat list, no PDFs) ────────
+        # ── Tab 1: All HTML pages ─────────────────────────────
         with tab1:
             st.subheader(
                 f"All Pages — HTML only ({len(res['all_pages'])})"
@@ -845,7 +932,6 @@ if st.session_state.results:
         # ── Tab 2: Categorized HTML pages ─────────────────────
         with tab2:
             st.subheader("🏷️ Pages by Category")
-            st.caption("HTML pages only, grouped by category.")
             lines = []
             for label in sorted(cat_pages.keys(), key=sort_key):
                 urls = cat_pages[label]
@@ -899,7 +985,7 @@ if st.session_state.results:
                     key="dl_cat_pdf",
                 )
 
-        # ── Tab 4: Pages with PDFs grouped by page category ───
+        # ── Tab 4: Pages with PDFs by category ────────────────
         with tab4:
             ppbc = res.get("pages_pdfs_by_category", {})
             total_pages_with_pdf = sum(
@@ -909,11 +995,6 @@ if st.session_state.results:
                 f"🗂️ Pages with PDFs — by Category "
                 f"({total_pages_with_pdf} pages)"
             )
-            st.caption(
-                "Each HTML page that contains PDFs, "
-                "grouped by the page's category."
-            )
-
             if ppbc:
                 report_lines = []
                 for cat_label in sorted(ppbc.keys(), key=sort_key):
@@ -954,7 +1035,6 @@ if st.session_state.results:
                                     f"    PDF [{pdf_cat}]: {pdf}"
                                 )
                             st.markdown("---")
-
                 st.download_button(
                     "📥 Download Pages with PDFs",
                     "\n".join(report_lines),
@@ -963,3 +1043,88 @@ if st.session_state.results:
                 )
             else:
                 st.info("No pages with PDFs found.")
+
+        # ── Tab 5: Sitemap ────────────────────────────────────
+        with tab5:
+            st.subheader(
+                f"🗺️ Site Map — {len(res['all_pages'])} pages"
+            )
+            st.caption(
+                "Tree view of all deduplicated HTML pages. "
+                "Coloured badges show category. "
+                "Click any link to open the page."
+            )
+
+            # Legend
+            st.markdown("**Category Legend:**")
+            legend_cols = st.columns(len(CATEGORY_COLOURS))
+            for idx, (cat_name, colour) in enumerate(
+                CATEGORY_COLOURS.items()
+            ):
+                legend_cols[idx].markdown(
+                    f'<span style="background:{colour};color:white;'
+                    f'padding:2px 8px;border-radius:4px;'
+                    f'font-size:0.75em;">{cat_name}</span>',
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown("---")
+
+            # Depth filter
+            max_depth_show = st.slider(
+                "Show tree up to depth",
+                min_value=1, max_value=6, value=3,
+                key="sitemap_depth",
+                help=(
+                    "Controls how many levels are auto-expanded. "
+                    "Deeper levels still accessible via expanders."
+                )
+            )
+
+            # Filter by category
+            all_cats = sorted(
+                set(categorize_url(u) for u in res["all_pages"])
+            )
+            selected_cats = st.multiselect(
+                "Filter by category (empty = show all)",
+                options=all_cats,
+                default=[],
+                key="sitemap_cat_filter",
+            )
+
+            # Apply category filter
+            pages_to_map = res["all_pages"]
+            if selected_cats:
+                pages_to_map = [
+                    u for u in pages_to_map
+                    if categorize_url(u) in selected_cats
+                ]
+
+            st.markdown(
+                f"*Showing **{len(pages_to_map)}** pages*"
+            )
+            st.markdown("---")
+
+            if pages_to_map:
+                tree = build_tree(pages_to_map)
+                all_dl_lines = ["SITEMAP", "=" * 60, ""]
+
+                for root_label in sorted(tree.keys()):
+                    root_node = tree[root_label]
+                    dl_lines  = render_tree(
+                        root_node,
+                        root_label,
+                        depth=0,
+                        max_auto_expand=max_depth_show,
+                    )
+                    all_dl_lines.extend(dl_lines)
+
+                st.markdown("---")
+                st.download_button(
+                    "📥 Download Sitemap (text)",
+                    "\n".join(all_dl_lines),
+                    "sitemap.txt", "text/plain",
+                    key="dl_sitemap",
+                )
+            else:
+                st.info("No pages match the selected filters.")
