@@ -155,6 +155,11 @@ COMPILED_CATEGORIES = [
     for label, patterns in CATEGORIES
 ]
 
+# PDF extension pattern — used to separate HTML pages from PDFs
+PDF_EXTENSION_RE = re.compile(
+    r"\.pdf($|\?)|/pdf/|download.*pdf", re.IGNORECASE
+)
+
 # ═══════════════════════════════════════════════════════════════
 # EXTERNAL DOMAIN FILTERS
 # ═══════════════════════════════════════════════════════════════
@@ -191,7 +196,13 @@ SEC_FILING_PATTERNS = [
 # CORE HELPERS
 # ═══════════════════════════════════════════════════════════════
 
+def is_pdf_url(url: str) -> bool:
+    """Return True if the URL points to a PDF (not an HTML page)."""
+    return bool(PDF_EXTENSION_RE.search(url))
+
+
 def categorize_url(url: str) -> str:
+    """First match wins. Out of Scope is always index 0."""
     for label, compiled_patterns in COMPILED_CATEGORIES:
         for pattern in compiled_patterns:
             if pattern.search(url):
@@ -216,26 +227,13 @@ def normalize_url(url: str) -> str:
 
 
 def strip_query(url: str) -> str:
-    """Return URL with query string and fragment removed."""
+    """Remove query string and fragment, lowercase netloc."""
     p = urlparse(url)
     return urlunparse((
         p.scheme, p.netloc.lower(),
         p.path.rstrip("/"),
         "", "", ""
     ))
-
-
-def get_path_depth(url: str) -> int:
-    """
-    Return the number of non-empty path segments.
-    https://example.com/           → 0
-    https://example.com/about      → 1
-    https://example.com/about/team → 2
-    """
-    path = urlparse(url).path.strip("/")
-    if not path:
-        return 0
-    return len(path.split("/"))
 
 
 def is_social_media_url(url: str) -> bool:
@@ -250,22 +248,17 @@ def is_social_media_url(url: str) -> bool:
 
 
 def is_sec_filing_url(url: str) -> bool:
-    for pat in SEC_FILING_PATTERNS:
-        if pat.search(url):
-            return True
-    return False
+    return any(pat.search(url) for pat in SEC_FILING_PATTERNS)
 
 
 def _clean_domain(netloc: str) -> str:
-    d = netloc.lower().replace("www.", "")
-    return d.split(":")[0]
+    return netloc.lower().replace("www.", "").split(":")[0]
 
 
 def is_same_domain_or_allowed(url: str, base_domain: str) -> bool:
-    parsed    = urlparse(url)
-    url_dom   = _clean_domain(parsed.netloc)
+    parsed     = urlparse(url)
+    url_dom    = _clean_domain(parsed.netloc)
     base_clean = _clean_domain(base_domain)
-
     if url_dom == base_clean or url_dom.endswith("." + base_clean):
         return True
     for junk in JUNK_EXTERNAL_DOMAINS:
@@ -285,50 +278,31 @@ def is_investor_or_media_page(url: str) -> bool:
 # ═══════════════════════════════════════════════════════════════
 # DEDUPLICATION
 #
-# The full pipeline:
+# Step 1 — Strip query strings
+#           page?src=A + page?src=B → one entry → page
 #
-#   Step 1 — Strip query strings
-#            page?src=A  +  page?src=B  →  keep one  →  page
+# Step 2 — Parent-path suppression
+#           /solutions exists → drop /solutions/pageA
 #
-#   Step 2 — Parent-path suppression
-#            If /solutions is in the set, drop /solutions/pageA
-#            because /solutions is a shallower ancestor
-#
-#   Step 3 — Sibling flood detection  ← NEW
-#            At each (domain, parent_path) bucket, if the number
-#            of direct children exceeds SIBLING_THRESHOLD, keep
-#            only the first SIBLING_KEEP of them.
-#            This collapses pages like:
-#              /webinar_request_fluorescence2021
-#              /webinar_request_fluorescence2022
-#              /webinar_request_raman2020
-#              /webinar_request_raman2026
-#            down to a small representative set when there are
-#            too many siblings with no shared parent in the list.
-#
-# SIBLING_THRESHOLD  – how many siblings at one level before
-#                      we start collapsing (default 10)
-# SIBLING_KEEP       – how many to keep after collapsing (default 3)
+# Step 3 — Sibling flood (OPTIONAL, off by default)
+#           If > threshold siblings share same parent bucket,
+#           keep only first N
 # ═══════════════════════════════════════════════════════════════
 
-SIBLING_THRESHOLD = 10   # tune via sidebar slider
-SIBLING_KEEP      = 3    # tune via sidebar slider
-
-
-def deduplicate_urls(urls: list,
-                     sibling_threshold: int = SIBLING_THRESHOLD,
-                     sibling_keep: int = SIBLING_KEEP) -> list:
+def deduplicate_urls(
+    urls: list,
+    enable_sibling_flood: bool = False,
+    sibling_threshold: int = 10,
+    sibling_keep: int = 3,
+) -> list:
     """
-    Full deduplication pipeline.
-
-    Step 1 – strip query strings, unique paths only.
-    Step 2 – drop any URL whose direct parent path also exists.
-    Step 3 – if a (domain, parent_path) bucket has more than
-             sibling_threshold children, keep only sibling_keep.
+    Step 1: Strip query strings → unique paths only.
+    Step 2: Parent-path suppression.
+    Step 3: Sibling flood control (optional).
     """
 
     # ── Step 1: strip queries ─────────────────────────────────
-    seen: set   = set()
+    seen:  set  = set()
     clean: list = []
     for url in sorted(urls):          # sort → shorter paths first
         c = strip_query(url)
@@ -337,59 +311,45 @@ def deduplicate_urls(urls: list,
             clean.append(c)
 
     # ── Step 2: parent-path suppression ──────────────────────
-    # Build lookup of all (scheme, netloc, path) present
-    path_set: set = set()
+    path_set:     set  = set()
     parsed_cache: dict = {}
     for u in clean:
         p = urlparse(u)
         parsed_cache[u] = p
         path_set.add((p.scheme, p.netloc, p.path.rstrip("/")))
 
-    after_parent_drop: list = []
+    after_parent: list = []
     for u in clean:
         p     = parsed_cache[u]
         parts = p.path.strip("/").split("/")
         is_child = False
-
-        # Walk up: does any strict ancestor exist in our set?
         for depth in range(len(parts) - 1, 0, -1):
             parent_path = "/" + "/".join(parts[:depth])
             if (p.scheme, p.netloc, parent_path) in path_set:
                 is_child = True
                 break
-
         if not is_child:
-            after_parent_drop.append(u)
+            after_parent.append(u)
 
-    # ── Step 3: sibling flood detection ──────────────────────
-    # Group remaining URLs by (netloc, parent_path)
-    # parent_path = everything except the last path segment
-    #
-    # e.g.  /webinar_request_raman2020  →  parent = ""  (root)
-    #       /solutions/pageA            →  parent = "/solutions"
-    #
-    # If a bucket has > sibling_threshold entries, trim to
-    # sibling_keep (alphabetically first = shortest/earliest)
+    # ── Step 3: sibling flood (optional) ─────────────────────
+    if not enable_sibling_flood:
+        after_parent.sort()
+        return after_parent
 
     buckets: dict = defaultdict(list)
-    for u in after_parent_drop:
+    for u in after_parent:
         p      = urlparse(u)
         parts  = p.path.strip("/").split("/")
-        # parent segment = all parts except last
         parent = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
-        key    = (p.netloc, parent)
-        buckets[key].append(u)
+        buckets[(p.netloc, parent)].append(u)
 
     result: list = []
-    for key, bucket_urls in buckets.items():
+    for bucket_urls in buckets.values():
         if len(bucket_urls) > sibling_threshold:
-            # Keep only the first sibling_keep entries
-            # (list is already sorted from Step 1)
             result.extend(bucket_urls[:sibling_keep])
         else:
             result.extend(bucket_urls)
 
-    # Re-sort for stable output
     result.sort()
     return result
 
@@ -472,7 +432,7 @@ def _extract_from_json(data, base_url, links, pdfs, pdf_regex):
 async def crawl_website(
     start_url, pdf_pattern, max_depth,
     max_concurrent, progress_callback,
-    sibling_threshold, sibling_keep
+    enable_sibling_flood, sibling_threshold, sibling_keep,
 ):
     try:
         if not start_url.startswith(("http://", "https://")):
@@ -492,8 +452,10 @@ async def crawl_website(
         }
 
         visited:         set  = set()
-        raw_links:       set  = set()
-        raw_pdfs:        set  = set()
+        # Separate raw HTML pages from raw PDFs during crawl
+        raw_pages:       set  = set()   # HTML pages only
+        raw_pdfs:        set  = set()   # PDF links only
+        # Map: html_page_url → [pdf_urls found on that page]
         pages_with_pdfs: dict = {}
         json_link_count: int  = 0
 
@@ -555,20 +517,21 @@ async def crawl_website(
                             ):
                                 continue
 
-                            # Always collect raw (for PDF hunting)
-                            raw_links.add(abs_url)
-
-                            if pdf_regex.search(abs_url):
+                            # ── Separate PDFs from HTML pages ──
+                            if is_pdf_url(abs_url):
                                 raw_pdfs.add(abs_url)
                                 page_pdfs.append(abs_url)
-
-                            # Follow only same-domain links
-                            if (
-                                parsed.netloc == base_domain
-                                and depth + 1 < max_depth
-                                and abs_url not in visited
-                            ):
-                                new_urls.append((abs_url, depth + 1))
+                            else:
+                                raw_pages.add(abs_url)
+                                # Follow only HTML same-domain links
+                                if (
+                                    parsed.netloc == base_domain
+                                    and depth + 1 < max_depth
+                                    and abs_url not in visited
+                                ):
+                                    new_urls.append(
+                                        (abs_url, depth + 1)
+                                    )
 
                         # JSON extraction on IR/media pages
                         if is_investor_or_media_page(norm):
@@ -584,7 +547,11 @@ async def crawl_website(
                                         lnk, base_domain
                                     )
                                 ):
-                                    raw_links.add(lnk)
+                                    if is_pdf_url(lnk):
+                                        raw_pdfs.add(lnk)
+                                        page_pdfs.append(lnk)
+                                    else:
+                                        raw_pages.add(lnk)
                             for lnk in jpdfs:
                                 if (
                                     not is_social_media_url(lnk)
@@ -595,10 +562,11 @@ async def crawl_website(
                                     raw_pdfs.add(lnk)
                                     page_pdfs.append(lnk)
 
+                        # Record which page contained which PDFs
                         if page_pdfs:
-                            pages_with_pdfs[norm] = list(
-                                set(page_pdfs)
-                            )
+                            if norm not in pages_with_pdfs:
+                                pages_with_pdfs[norm] = set()
+                            pages_with_pdfs[norm].update(page_pdfs)
 
                 except Exception:
                     pass
@@ -625,24 +593,53 @@ async def crawl_website(
                         if normalize_url(nu) not in visited:
                             queue.append((nu, nd))
 
-        # ── Deduplication ─────────────────────────────────────
-        deduped_links = deduplicate_urls(
-            sorted(raw_links), sibling_threshold, sibling_keep
+        # ── Deduplication on HTML pages only ─────────────────
+        # PDFs are NOT deduplicated — we want every PDF found
+        deduped_pages = deduplicate_urls(
+            sorted(raw_pages),
+            enable_sibling_flood=enable_sibling_flood,
+            sibling_threshold=sibling_threshold,
+            sibling_keep=sibling_keep,
         )
-        deduped_pdfs = deduplicate_urls(
-            sorted(raw_pdfs), sibling_threshold, sibling_keep
-        )
+        all_pdfs = sorted(raw_pdfs)   # full list, no dedup
+
+        # ── pages_with_pdfs: convert sets → sorted lists ─────
+        pages_with_pdfs_clean = {
+            page: sorted(pdfs)
+            for page, pdfs in pages_with_pdfs.items()
+        }
+
+        # ── Categorize ────────────────────────────────────────
+        categorized_pages = categorize_all_urls(deduped_pages)
+        categorized_pdfs  = categorize_all_urls(all_pdfs)
+
+        # ── Pages-with-PDFs grouped by page category ─────────
+        # Structure:
+        # {
+        #   "Reports": {
+        #       "https://example.com/reports": ["pdf1.pdf", ...]
+        #   },
+        #   ...
+        # }
+        pages_pdfs_by_category: dict = defaultdict(dict)
+        for page_url, pdfs in pages_with_pdfs_clean.items():
+            page_cat = categorize_url(page_url)
+            pages_pdfs_by_category[page_cat][page_url] = pdfs
 
         return {
-            "all_links":         deduped_links,
-            "pdf_links":         deduped_pdfs,
-            "raw_link_count":    len(raw_links),
-            "raw_pdf_count":     len(raw_pdfs),
-            "pages_with_pdfs":   pages_with_pdfs,
-            "pages_crawled":     len(visited),
-            "json_links_count":  json_link_count,
-            "categorized_links": categorize_all_urls(deduped_links),
-            "categorized_pdfs":  categorize_all_urls(deduped_pdfs),
+            # HTML pages (deduplicated)
+            "all_pages":               deduped_pages,
+            "raw_page_count":          len(raw_pages),
+            # PDFs (full, no dedup)
+            "all_pdfs":                all_pdfs,
+            "raw_pdf_count":           len(raw_pdfs),
+            # Categorized
+            "categorized_pages":       categorized_pages,
+            "categorized_pdfs":        categorized_pdfs,
+            "pages_pdfs_by_category":  dict(pages_pdfs_by_category),
+            # Meta
+            "pages_crawled":           len(visited),
+            "json_links_count":        json_link_count,
         }
 
     except Exception as e:
@@ -656,7 +653,7 @@ async def crawl_website(
 st.title("🔗 Website & PDF Link Extractor")
 st.markdown(
     "**Async Deep Crawler — Regex Categories · "
-    "Query-Strip · Parent Suppression · Sibling Flood Control**"
+    "Query-Strip · Parent Suppression · Optional Sibling Flood**"
 )
 
 with st.sidebar:
@@ -668,31 +665,40 @@ with st.sidebar:
     )
     depth = st.slider(
         "Crawl Depth", min_value=1, max_value=5, value=2,
-        help="Subpages are crawled for PDFs but collapsed in output"
+        help="Subpages crawled for PDFs; only parents shown in output"
     )
     concurrent = st.slider(
         "Concurrent Requests", min_value=5, max_value=50, value=30
     )
     pdf_pattern = st.text_input(
         "PDF Regex Pattern",
-        value=r"\.pdf$|/pdf/|download.*pdf|\.PDF$",
+        value=r"\.pdf($|\?)|/pdf/|download.*pdf",
     )
 
     st.markdown("---")
     st.markdown("### 🔁 Deduplication Controls")
 
+    enable_sibling_flood = st.toggle(
+        "Enable Sibling Flood Control",
+        value=False,
+        help=(
+            "When ON: if too many sibling URLs share the same "
+            "parent path, collapse them to N representatives. "
+            "OFF by default — turn on only if results are too noisy."
+        )
+    )
+
     sibling_threshold = st.slider(
         "Sibling Flood Threshold",
         min_value=3, max_value=50, value=10,
-        help=(
-            "If more than this many sibling URLs share the same "
-            "parent path, collapse them down to 'Keep N' below."
-        )
+        disabled=not enable_sibling_flood,
+        help="Collapse siblings when count exceeds this number."
     )
     sibling_keep = st.slider(
-        "Keep N Siblings (after flood)",
+        "Keep N Siblings After Flood",
         min_value=1, max_value=10, value=3,
-        help="How many siblings to keep when flood is detected."
+        disabled=not enable_sibling_flood,
+        help="How many siblings to keep after collapsing."
     )
 
     st.markdown("---")
@@ -702,11 +708,13 @@ with st.sidebar:
             for p in patterns:
                 st.code(p)
 
+    st.markdown("---")
     st.markdown("### Features")
     st.markdown("""
+    ✅ HTML pages & PDFs tracked separately  
     ✅ Query-string deduplication  
     ✅ Parent-path suppression  
-    ✅ Sibling flood detection *(new)*  
+    ✅ Sibling flood *(optional toggle)*  
     ✅ External domain filtering  
     ✅ SEC filing override  
     ✅ Regex-based categorization  
@@ -757,7 +765,9 @@ with col1:
                         url_input, pdf_pattern,
                         depth, concurrent,
                         update_progress,
-                        sibling_threshold, sibling_keep,
+                        enable_sibling_flood,
+                        sibling_threshold,
+                        sibling_keep,
                     ))
 
                 st.session_state.results  = res
@@ -770,101 +780,105 @@ with col2:
         st.session_state.results = None
         st.rerun()
 
-# ── Results ───────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════
+# RESULTS DISPLAY
+# ═══════════════════════════════════════════════════════════════
 if st.session_state.results:
     res = st.session_state.results
 
     if "error" in res:
         st.error(f"Error: {res['error']}")
     else:
-        cat          = res.get("categorized_links", {})
-        n_unclass    = len(cat.get("❓ Unclassified", []))
-        n_oos        = len(cat.get("⛔ Out of Scope", []))
-        n_classified = len(res["all_links"]) - n_unclass - n_oos
+        cat_pages    = res.get("categorized_pages", {})
+        n_unclass    = len(cat_pages.get("❓ Unclassified", []))
+        n_oos        = len(cat_pages.get("⛔ Out of Scope", []))
+        n_classified = len(res["all_pages"]) - n_unclass - n_oos
 
-        # ── Metrics row ───────────────────────────────────────
-        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(8)
-        c1.metric("Pages Crawled",   res["pages_crawled"])
-        c2.metric("Raw Links",       res["raw_link_count"])
-        c3.metric("After Dedup",     len(res["all_links"]))
-        c4.metric("PDF Links",       len(res["pdf_links"]))
-        c5.metric("Raw PDFs",        res["raw_pdf_count"])
-        c6.metric("Classified",      n_classified)
-        c7.metric("Unclassified",    n_unclass)
-        c8.metric("Out of Scope",    n_oos)
+        # ── Metrics ───────────────────────────────────────────
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+        c1.metric("Pages Crawled",  res["pages_crawled"])
+        c2.metric("Raw Pages",      res["raw_page_count"])
+        c3.metric("Deduped Pages",  len(res["all_pages"]))
+        c4.metric("Total PDFs",     len(res["all_pdfs"]))
+        c5.metric("Classified",     n_classified)
+        c6.metric("Unclassified",   n_unclass)
+        c7.metric("Out of Scope",   n_oos)
 
-        # Show reduction stats
-        raw   = res["raw_link_count"]
-        dedup = len(res["all_links"])
+        raw   = res["raw_page_count"]
+        dedup = len(res["all_pages"])
         if raw > 0:
             pct = round((raw - dedup) / raw * 100, 1)
             st.info(
-                f"🔁 Deduplication removed **{raw - dedup}** URLs "
-                f"({pct}% reduction) — from {raw} raw → {dedup} unique"
+                f"🔁 Deduplication: {raw} raw pages → "
+                f"{dedup} unique ({pct}% reduction)"
             )
 
         st.markdown("---")
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📄 All Links",
-            "🏷️ Categorized Links",
-            "📑 PDF Links",
+        # ── 4 Tabs ────────────────────────────────────────────
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📄 All Pages",
+            "🏷️ Categorized Pages",
             "📑 Categorized PDFs",
             "🗂️ Pages with PDFs",
         ])
 
+        # ── Tab 1: All HTML pages (flat list, no PDFs) ────────
         with tab1:
-            st.subheader(f"All Links ({len(res['all_links'])})")
-            for lnk in res["all_links"]:
+            st.subheader(
+                f"All Pages — HTML only ({len(res['all_pages'])})"
+            )
+            st.caption(
+                "Deduplicated HTML pages only. "
+                "PDFs are in the Categorized PDFs tab."
+            )
+            for lnk in res["all_pages"]:
                 st.markdown(f"[{lnk}]({lnk})")
-            if res["all_links"]:
+            if res["all_pages"]:
                 st.download_button(
-                    "📥 Download All Links",
-                    "\n".join(res["all_links"]),
-                    "all_links.txt", "text/plain",
+                    "📥 Download All Pages",
+                    "\n".join(res["all_pages"]),
+                    "all_pages.txt", "text/plain",
                 )
 
+        # ── Tab 2: Categorized HTML pages ─────────────────────
         with tab2:
-            st.subheader("🏷️ Links by Category")
+            st.subheader("🏷️ Pages by Category")
+            st.caption("HTML pages only, grouped by category.")
             lines = []
-            for label in sorted(cat.keys(), key=sort_key):
-                urls = cat[label]
+            for label in sorted(cat_pages.keys(), key=sort_key):
+                urls = cat_pages[label]
                 lines += [
                     f"\n{'='*60}",
-                    f"{label}  ({len(urls)} URLs)",
+                    f"{label}  ({len(urls)} pages)",
                     f"{'='*60}",
                 ]
                 with st.expander(
-                    f"📂 {label} — {len(urls)} URL(s)",
+                    f"📂 {label} — {len(urls)} page(s)",
                     expanded=False
                 ):
                     for u in urls:
                         st.markdown(f"- [{u}]({u})")
                         lines.append(u)
             st.download_button(
-                "📥 Download Categorized",
+                "📥 Download Categorized Pages",
                 "\n".join(lines),
-                "categorized_links.txt", "text/plain",
-                key="dl_cat",
+                "categorized_pages.txt", "text/plain",
+                key="dl_cat_pages",
             )
 
+        # ── Tab 3: Categorized PDFs ───────────────────────────
         with tab3:
-            st.subheader(f"PDF Links ({len(res['pdf_links'])})")
-            for lnk in res["pdf_links"]:
-                st.markdown(f"[{lnk}]({lnk})")
-            if res["pdf_links"]:
-                st.download_button(
-                    "📥 Download PDFs",
-                    "\n".join(res["pdf_links"]),
-                    "pdf_links.txt", "text/plain",
-                )
-
-        with tab4:
             st.subheader("📑 PDFs by Category")
-            cpdf      = res.get("categorized_pdfs", {})
+            st.caption(
+                f"All {len(res['all_pdfs'])} PDFs found "
+                "during crawl, grouped by category."
+            )
+            cat_pdfs  = res.get("categorized_pdfs", {})
             pdf_lines = []
-            for label in sorted(cpdf.keys(), key=sort_key):
-                urls = cpdf[label]
+            for label in sorted(cat_pdfs.keys(), key=sort_key):
+                urls = cat_pdfs[label]
                 pdf_lines += [
                     f"\n{'='*60}",
                     f"{label}  ({len(urls)} PDFs)",
@@ -885,21 +899,67 @@ if st.session_state.results:
                     key="dl_cat_pdf",
                 )
 
-        with tab5:
-            st.subheader(
-                f"Pages with PDFs ({len(res['pages_with_pdfs'])})"
+        # ── Tab 4: Pages with PDFs grouped by page category ───
+        with tab4:
+            ppbc = res.get("pages_pdfs_by_category", {})
+            total_pages_with_pdf = sum(
+                len(pages) for pages in ppbc.values()
             )
-            for page_url, pdfs in sorted(
-                res["pages_with_pdfs"].items()
-            ):
-                with st.expander(
-                    f"📄 {page_url} ({len(pdfs)} PDFs)"
-                ):
-                    st.markdown(
-                        f"**Page:** [{page_url}]({page_url})"
+            st.subheader(
+                f"🗂️ Pages with PDFs — by Category "
+                f"({total_pages_with_pdf} pages)"
+            )
+            st.caption(
+                "Each HTML page that contains PDFs, "
+                "grouped by the page's category."
+            )
+
+            if ppbc:
+                report_lines = []
+                for cat_label in sorted(ppbc.keys(), key=sort_key):
+                    pages_dict = ppbc[cat_label]
+                    total_pdfs_in_cat = sum(
+                        len(v) for v in pages_dict.values()
                     )
-                    for pdf in pdfs:
-                        c = categorize_url(pdf)
-                        st.markdown(
-                            f"  ↳ [{pdf}]({pdf})  `{c}`"
-                        )
+                    report_lines += [
+                        f"\n{'='*60}",
+                        f"{cat_label}  "
+                        f"({len(pages_dict)} pages, "
+                        f"{total_pdfs_in_cat} PDFs)",
+                        f"{'='*60}",
+                    ]
+                    with st.expander(
+                        f"📂 {cat_label} — "
+                        f"{len(pages_dict)} page(s), "
+                        f"{total_pdfs_in_cat} PDF(s)",
+                        expanded=False,
+                    ):
+                        for page_url, pdfs in sorted(
+                            pages_dict.items()
+                        ):
+                            st.markdown(
+                                f"**🔗 [{page_url}]({page_url})**"
+                            )
+                            for pdf in pdfs:
+                                pdf_cat = categorize_url(pdf)
+                                st.markdown(
+                                    f"&nbsp;&nbsp;&nbsp;↳ "
+                                    f"[{pdf}]({pdf})  "
+                                    f"`{pdf_cat}`"
+                                )
+                                report_lines.append(
+                                    f"  PAGE: {page_url}"
+                                )
+                                report_lines.append(
+                                    f"    PDF [{pdf_cat}]: {pdf}"
+                                )
+                            st.markdown("---")
+
+                st.download_button(
+                    "📥 Download Pages with PDFs",
+                    "\n".join(report_lines),
+                    "pages_with_pdfs.txt", "text/plain",
+                    key="dl_pages_pdfs",
+                )
+            else:
+                st.info("No pages with PDFs found.")
