@@ -37,7 +37,7 @@ CATEGORIES = [
     ),
     (
         "Presentation", [
-            r"investor.*day", r"presentation", r"deck",r"\Wir\W",
+            r"investor.*day", r"presentation", r"deck",r"\Wir",
             r"slide", r"earnings", r"poster", r"supplemental",
             r"supplementary", r"non.*gaap", r"gaap", r"ifrs",
             r"reconciliation", r"roadshow", r"road.*show",
