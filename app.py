@@ -1157,3 +1157,74 @@ if st.session_state.results:
                     "📥 Download Pages with PDFs",
                     "\n".join(report_lines),
                     "pages_with_pdfs.txt", "text/plain",
+                    key="dl_pages_pdfs",
+                )
+            else:
+                st.info("No pages with PDFs found.")
+
+        # ── TAB 5: Sitemap ────────────────────────────────────
+        with tab5:
+            st.subheader(
+                f"🗺️ Sitemap — {len(res['all_pages'])} pages"
+            )
+
+            # ── Legend ────────────────────────────────────────
+            st.markdown("**Category colour legend:**")
+            legend_html = " &nbsp; ".join(
+                f'<span style="background:{col};color:white;'
+                f'padding:2px 8px;border-radius:4px;'
+                f'font-size:0.75em;">{name}</span>'
+                for name, col in CATEGORY_COLOURS.items()
+            )
+            st.markdown(legend_html, unsafe_allow_html=True)
+            st.markdown("---")
+
+            # ── Controls ──────────────────────────────────────
+            sm_col1, sm_col2 = st.columns([1, 2])
+            with sm_col1:
+                max_depth_show = st.slider(
+                    "Auto-show up to depth",
+                    min_value=1, max_value=8, value=3,
+                    key="sitemap_depth",
+                    help=(
+                        "Rows at this depth and shallower render "
+                        "directly. Deeper rows appear in a single "
+                        "expander per parent group."
+                    )
+                )
+            with sm_col2:
+                all_cats_sm = sorted(
+                    set(categorize_url(u) for u in res["all_pages"])
+                )
+                selected_cats = st.multiselect(
+                    "Filter by category (empty = show all)",
+                    options=all_cats_sm,
+                    default=[],
+                    key="sitemap_cat_filter",
+                )
+
+            pages_to_map = res["all_pages"]
+            if selected_cats:
+                pages_to_map = [
+                    u for u in pages_to_map
+                    if categorize_url(u) in selected_cats
+                ]
+
+            st.caption(f"Showing {len(pages_to_map)} pages")
+            st.markdown("---")
+
+            if pages_to_map:
+                dl_lines = render_flat_sitemap(
+                    pages_to_map,
+                    max_depth_show=max_depth_show,
+                )
+
+                st.markdown("---")
+                st.download_button(
+                    "📥 Download Sitemap",
+                    build_sitemap_text(pages_to_map),
+                    "sitemap.txt", "text/plain",
+                    key="dl_sitemap",
+                )
+            else:
+                st.info("No pages match the selected filters.")
