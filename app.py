@@ -6,6 +6,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 import re
 from collections import deque, defaultdict
 import json
+from html import unescape as html_unescape  # NEW: for decoding HTML entities
 
 # ═══════════════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -37,7 +38,7 @@ CATEGORIES = [
     ),
     (
         "Presentation", [
-            r"investor.*day", r"presentation", r"deck",r"\Wir",
+            r"investor.*day", r"presentation", r"deck", r"\Wir",
             r"slide", r"earnings", r"poster", r"supplemental",
             r"supplementary", r"non.*gaap", r"gaap", r"ifrs",
             r"reconciliation", r"roadshow", r"road.*show",
@@ -157,6 +158,17 @@ COMPILED_CATEGORIES = [
 
 PDF_EXTENSION_RE = re.compile(
     r"\.pdf($|\?)|/pdf/|download.*pdf", re.IGNORECASE
+)
+
+# NEW: Regex to find raw URLs (esp. PDFs) in decoded HTML / JS / JSON blobs
+RAW_URL_RE = re.compile(
+    r"""https?://[^\s"'<>{}\\\[\]()|^`]+""",
+    re.IGNORECASE
+)
+# NEW: Also catch protocol-relative or root-relative PDF refs in raw text
+RELATIVE_PDF_RE = re.compile(
+    r"""(?:["'\s>(])(/[^\s"'<>{}\\]+\.pdf(?:\?[^\s"'<>{}\\]*)?)""",
+    re.IGNORECASE
 )
 
 CATEGORY_COLOURS = {
@@ -283,6 +295,11 @@ def is_investor_or_media_page(url: str) -> bool:
     return any(k in url.lower() for k in kws)
 
 
+def clean_extracted_url(u: str) -> str:
+    """Trim trailing punctuation that often gets caught by regex."""
+    return u.rstrip('.,);:!?\'"')
+
+
 # ═══════════════════════════════════════════════════════════════
 # DEDUPLICATION
 # ═══════════════════════════════════════════════════════════════
@@ -293,7 +310,6 @@ def deduplicate_urls(
     sibling_threshold: int = 10,
     sibling_keep: int = 3,
 ) -> list:
-    # Step 1: strip queries
     seen:  set  = set()
     clean: list = []
     for url in sorted(urls):
@@ -302,7 +318,6 @@ def deduplicate_urls(
             seen.add(c)
             clean.append(c)
 
-    # Step 2: parent-path suppression
     path_set:     set  = set()
     parsed_cache: dict = {}
     for u in clean:
@@ -323,7 +338,6 @@ def deduplicate_urls(
         if not is_child:
             after_parent.append(u)
 
-    # Step 3: sibling flood (optional)
     if not enable_sibling_flood:
         after_parent.sort()
         return after_parent
@@ -348,92 +362,9 @@ def deduplicate_urls(
 
 # ═══════════════════════════════════════════════════════════════
 # SITEMAP HELPERS
-# Flat rendering — no nested expanders
 # ═══════════════════════════════════════════════════════════════
 
-def build_flat_sitemap(urls: list) -> list:
-    """
-    Convert URL list into a flat list of dicts sorted by path,
-    each entry carrying depth, label, full url, category.
-
-    Example output:
-    [
-      {"depth":0, "label":"example.com",  "url":"https://example.com", "cat":"...", "has_children": True},
-      {"depth":1, "label":"about",        "url":"https://example.com/about", ...},
-      {"depth":2, "label":"team",         "url":"https://example.com/about/team", ...},
-    ]
-    """
-    if not urls:
-        return []
-
-    # Build nested dict tree first (for has_children detection)
-    tree: dict = {}
-    for url in sorted(urls):
-        p     = urlparse(url)
-        parts = [p.netloc] + [
-            s for s in p.path.strip("/").split("/") if s
-        ]
-        node = tree
-        for part in parts:
-            if part not in node:
-                node[part] = {"__children__": {}}
-            node = node[part]["__children__"]
-        # store url on the parent node
-        # walk back — simpler to tag via second pass
-    
-    # Build flat list via iterative DFS
-    flat:  list  = []
-    stack: list  = []   # (node_dict, label, depth, url_prefix)
-
-    # Seed with root domains
-    for root_label in sorted(tree.keys()):
-        stack.append((tree[root_label], root_label, 0, ""))
-
-    # We need the actual full URLs — build a lookup
-    url_lookup: dict = {}
-    for url in urls:
-        p     = urlparse(url)
-        parts = [p.netloc] + [
-            s for s in p.path.strip("/").split("/") if s
-        ]
-        key = tuple(parts)
-        url_lookup[key] = url
-
-    def _walk(node_dict, label, depth, path_parts):
-        """Iterative-friendly recursive walk — depth limited."""
-        full_key = tuple(path_parts)
-        url      = url_lookup.get(full_key, "")
-        children = node_dict.get("__children__", {})
-        cat      = categorize_url(url) if url else ""
-
-        flat.append({
-            "depth":        depth,
-            "label":        label,
-            "url":          url,
-            "cat":          cat,
-            "has_children": bool(children),
-        })
-
-        for child_label in sorted(children.keys()):
-            _walk(
-                children[child_label],
-                child_label,
-                depth + 1,
-                path_parts + [child_label],
-            )
-
-    for root_label in sorted(tree.keys()):
-        _walk(tree[root_label], root_label, 0, [root_label])
-
-    return flat
-
-
 def build_tree_for_lookup(urls: list) -> dict:
-    """
-    Build nested dict:
-    { netloc: { "__children__": { seg: { "__children__": {...} } } } }
-    also stores __url__ at each node.
-    """
     tree: dict = {}
     for url in sorted(urls):
         p     = urlparse(url)
@@ -446,7 +377,6 @@ def build_tree_for_lookup(urls: list) -> dict:
                 node[part] = {"__children__": {}, "__url__": ""}
             node = node[part]["__children__"]
 
-    # Second pass — tag URLs
     for url in urls:
         p     = urlparse(url)
         parts = [p.netloc] + [
@@ -461,23 +391,13 @@ def build_tree_for_lookup(urls: list) -> dict:
     return tree
 
 
-def render_flat_sitemap(
-    urls: list,
-    max_depth_show: int = 99,
-) -> list:
-    """
-    Render sitemap as flat indented HTML rows — NO nested expanders.
-    Returns download lines.
-    Uses st.markdown row-by-row with indentation via &nbsp;
-    Rows deeper than max_depth_show are hidden via a
-    per-depth-group expander (one level of expander max).
-    """
+def render_flat_sitemap(urls: list, max_depth_show: int = 99) -> list:
     if not urls:
         st.info("No pages to display.")
         return []
 
     tree       = build_tree_for_lookup(urls)
-    flat_rows  = []   # (depth, label, url, cat)
+    flat_rows  = []
     dl_lines   = []
 
     def _walk(node_dict, label, depth, path_parts):
@@ -496,29 +416,12 @@ def render_flat_sitemap(
     for root_label in sorted(tree.keys()):
         _walk(tree[root_label], root_label, 0, [root_label])
 
-    # ── Render ────────────────────────────────────────────────
-    # Rows within max_depth_show render directly.
-    # Rows beyond are batched per parent into a single expander
-    # (one expander level — no nesting).
-
-    # Group rows: "visible" (depth <= max_depth_show) render inline;
-    # overflow rows are collected then shown in ONE expander per parent.
-
     html_rows_visible  = []
-    overflow_groups    = defaultdict(list)  # parent_label → rows
+    overflow_groups    = defaultdict(list)
 
     for depth, label, url, cat in flat_rows:
         colour = CATEGORY_COLOURS.get(cat, "#7f7f7f")
         indent = "&nbsp;" * 6 * depth
-        icon   = (
-            "🌐" if depth == 0
-            else ("📂" if any(
-                r[0] == depth + 1
-                for r in flat_rows
-                if r[1] != label
-            ) else "📄")
-        )
-        # Simpler icon logic
         icon = "🌐" if depth == 0 else "📄"
 
         badge = (
@@ -542,7 +445,6 @@ def render_flat_sitemap(
         if depth <= max_depth_show:
             html_rows_visible.append(row_html)
         else:
-            # Find nearest visible ancestor label
             ancestor = next(
                 (
                     r[1] for r in reversed(flat_rows[
@@ -554,35 +456,23 @@ def render_flat_sitemap(
             )
             overflow_groups[ancestor].append(row_html)
 
-    # Render visible rows as one markdown block
     if html_rows_visible:
-        st.markdown(
-            "<br>".join(html_rows_visible),
-            unsafe_allow_html=True,
-        )
+        st.markdown("<br>".join(html_rows_visible), unsafe_allow_html=True)
 
-    # Render overflow groups — ONE expander per ancestor group
     if overflow_groups:
         st.markdown("---")
-        st.markdown(
-            f"*Pages deeper than depth {max_depth_show}:*"
-        )
+        st.markdown(f"*Pages deeper than depth {max_depth_show}:*")
         for ancestor_label, rows in sorted(overflow_groups.items()):
             with st.expander(
-                f"📂 Children of '{ancestor_label}' "
-                f"({len(rows)} pages)",
+                f"📂 Children of '{ancestor_label}' ({len(rows)} pages)",
                 expanded=False,
             ):
-                st.markdown(
-                    "<br>".join(rows),
-                    unsafe_allow_html=True,
-                )
+                st.markdown("<br>".join(rows), unsafe_allow_html=True)
 
     return dl_lines
 
 
 def build_sitemap_text(urls: list) -> str:
-    """Plain-text indented sitemap for download."""
     lines = ["SITEMAP", "=" * 60, ""]
     tree  = build_tree_for_lookup(urls)
 
@@ -627,8 +517,10 @@ async def extract_json_links(session, url, pdf_regex):
                 except Exception:
                     pass
             else:
-                html = await response.text()
-                soup = BeautifulSoup(html, "html.parser")
+                html_text = await response.text()
+                # NEW: decode HTML entities before parsing
+                decoded = html_unescape(html_text)
+                soup = BeautifulSoup(decoded, "html.parser")
                 for script in soup.find_all(
                     "script", type="application/json"
                 ):
@@ -676,6 +568,34 @@ def _extract_from_json(data, base_url, links, pdfs, pdf_regex):
 
 
 # ═══════════════════════════════════════════════════════════════
+# NEW: RAW-TEXT EXTRACTION FOR ENCODED URLS
+# ═══════════════════════════════════════════════════════════════
+
+def extract_urls_from_raw_text(decoded_text: str, base_url: str) -> set:
+    """
+    Extract any URLs (especially PDFs) from already-decoded HTML/JS/JSON
+    text. This catches URLs that were originally encoded with HTML
+    entities like &quot; (e.g. ${split_text:""} patterns) or wrapped in
+    JS template strings that BeautifulSoup wouldn't follow as <a href>.
+    """
+    found: set = set()
+
+    # Absolute URLs
+    for m in RAW_URL_RE.finditer(decoded_text):
+        candidate = clean_extracted_url(m.group(0))
+        if candidate.startswith("http"):
+            found.add(candidate)
+
+    # Root-relative PDF references (e.g. "/uploads/file.pdf")
+    for m in RELATIVE_PDF_RE.finditer(decoded_text):
+        rel = m.group(1)
+        abs_url = urljoin(base_url, rel)
+        found.add(clean_extracted_url(abs_url))
+
+    return found
+
+
+# ═══════════════════════════════════════════════════════════════
 # MAIN CRAWLER
 # ═══════════════════════════════════════════════════════════════
 
@@ -706,11 +626,14 @@ async def crawl_website(
         raw_pdfs:        set  = set()
         pages_with_pdfs: dict = {}
         json_link_count: int  = 0
+        encoded_pdf_count: int = 0  # NEW: track encoded extractions
 
         queue     = deque([(start_url, 0)])
         semaphore = asyncio.Semaphore(max_concurrent)
 
         async def fetch_and_parse(session, url, depth):
+            nonlocal json_link_count, encoded_pdf_count
+
             norm = normalize_url(url)
             if norm in visited or depth >= max_depth:
                 return []
@@ -727,15 +650,17 @@ async def crawl_website(
                     ) as resp:
                         if resp.status != 200:
                             return []
-                        ct = resp.headers.get(
-                            "Content-Type", ""
-                        ).lower()
+                        ct = resp.headers.get("Content-Type", "").lower()
                         if "text/html" not in ct:
                             return []
 
-                        html = await resp.text()
-                        soup = BeautifulSoup(html, "html.parser")
+                        raw_html = await resp.text()
 
+                        # ── NEW: Decode HTML entities (&quot; etc.) ──
+                        decoded_html = html_unescape(raw_html)
+                        soup = BeautifulSoup(decoded_html, "html.parser")
+
+                        # ── 1. Standard <a href> extraction ──
                         for a in soup.find_all("a", href=True):
                             href = a["href"]
                             if any(
@@ -744,9 +669,7 @@ async def crawl_website(
                             ):
                                 continue
 
-                            abs_url = normalize_url(
-                                urljoin(url, href)
-                            )
+                            abs_url = normalize_url(urljoin(url, href))
                             if is_social_media_url(abs_url):
                                 continue
                             if is_sec_filing_url(abs_url):
@@ -775,15 +698,52 @@ async def crawl_website(
                                     and depth + 1 < max_depth
                                     and abs_url not in visited
                                 ):
-                                    new_urls.append(
-                                        (abs_url, depth + 1)
-                                    )
+                                    new_urls.append((abs_url, depth + 1))
 
+                        # ── 2. NEW: Raw-text extraction for encoded URLs ──
+                        # Catches URLs hidden in &quot;...&quot; encoded
+                        # blocks, JS template strings, JSON blobs, etc.
+                        raw_extracted = extract_urls_from_raw_text(
+                            decoded_html, url
+                        )
+                        for cand in raw_extracted:
+                            try:
+                                abs_url = normalize_url(cand)
+                            except Exception:
+                                continue
+                            if not abs_url.startswith("http"):
+                                continue
+                            parsed = urlparse(abs_url)
+                            if parsed.scheme not in ("http", "https"):
+                                continue
+                            if is_social_media_url(abs_url):
+                                continue
+                            if is_sec_filing_url(abs_url):
+                                continue
+                            if not is_same_domain_or_allowed(
+                                abs_url, base_domain
+                            ):
+                                continue
+
+                            if is_pdf_url(abs_url):
+                                if abs_url not in raw_pdfs:
+                                    encoded_pdf_count += 1
+                                raw_pdfs.add(abs_url)
+                                if abs_url not in page_pdfs:
+                                    page_pdfs.append(abs_url)
+                            else:
+                                # only add non-PDF if it's plausibly an HTML page
+                                if not any(
+                                    parsed.path.lower().endswith(ext)
+                                    for ext in skip_exts
+                                ):
+                                    raw_pages.add(abs_url)
+
+                        # ── 3. JSON endpoint extraction ──
                         if is_investor_or_media_page(norm):
                             jlinks, jpdfs = await extract_json_links(
                                 session, url, pdf_regex
                             )
-                            nonlocal json_link_count
                             json_link_count += len(jlinks)
                             for lnk in jlinks:
                                 if (
@@ -868,6 +828,7 @@ async def crawl_website(
             "pages_pdfs_by_category":  dict(pages_pdfs_by_category),
             "pages_crawled":           len(visited),
             "json_links_count":        json_link_count,
+            "encoded_pdf_count":       encoded_pdf_count,  # NEW
         }
 
     except Exception as e:
@@ -881,16 +842,15 @@ async def crawl_website(
 st.title("🔗 Website & PDF Link Extractor")
 st.markdown(
     "**Async Deep Crawler — Regex Categories · "
-    "Query-Strip · Parent Suppression · Sitemap View**"
+    "Query-Strip · Parent Suppression · Sitemap View · "
+    "HTML-Entity Aware**"
 )
 
 with st.sidebar:
     st.header("⚙️ Settings")
 
     url_input = st.text_input("Website URL", value="https://")
-    depth = st.slider(
-        "Crawl Depth", min_value=1, max_value=10, value=3,
-    )
+    depth = st.slider("Crawl Depth", min_value=1, max_value=10, value=3)
     concurrent = st.slider(
         "Concurrent Requests", min_value=5, max_value=50, value=30
     )
@@ -903,8 +863,7 @@ with st.sidebar:
     st.markdown("### 🔁 Deduplication Controls")
 
     enable_sibling_flood = st.toggle(
-        "Enable Sibling Flood Control",
-        value=False,
+        "Enable Sibling Flood Control", value=False,
     )
     sibling_threshold = st.slider(
         "Sibling Flood Threshold",
@@ -1005,6 +964,14 @@ if st.session_state.results:
         c6.metric("Unclassified",   n_unclass)
         c7.metric("Out of Scope",   n_oos)
 
+        # NEW: Show encoded extraction stat if any caught
+        if res.get("encoded_pdf_count", 0) > 0:
+            st.success(
+                f"🔓 Recovered {res['encoded_pdf_count']} additional "
+                f"PDF link(s) from HTML-encoded sources "
+                f"(e.g. `&quot;` patterns)."
+            )
+
         raw   = res["raw_page_count"]
         dedup = len(res["all_pages"])
         if raw > 0:
@@ -1024,12 +991,11 @@ if st.session_state.results:
             "🗺️ Sitemap",
         ])
 
+        # ── TAB 1: All Pages ──────────────────────────────────
         with tab1:
-            st.subheader(
-                f"All Pages ({len(res['all_pages'])})"
-            )
-            for lnk in res["all_pages"]:
-                st.markdown(f"[{lnk}]({lnk})")
+            st.subheader(f"All Pages ({len(res['all_pages'])})")
+            for i, lnk in enumerate(res["all_pages"], 1):
+                st.markdown(f"{i}. [{lnk}]({lnk})")
             if res["all_pages"]:
                 st.download_button(
                     "📥 Download All Pages",
@@ -1037,6 +1003,7 @@ if st.session_state.results:
                     "all_pages.txt", "text/plain",
                 )
 
+        # ── TAB 2: Categorized Pages ──────────────────────────
         with tab2:
             st.subheader("🏷️ Pages by Category")
             lines = []
@@ -1051,8 +1018,8 @@ if st.session_state.results:
                     f"📂 {label} — {len(urls)} page(s)",
                     expanded=False
                 ):
-                    for u in urls:
-                        st.markdown(f"- [{u}]({u})")
+                    for i, u in enumerate(urls, 1):
+                        st.markdown(f"{i}. [{u}]({u})")
                         lines.append(u)
             st.download_button(
                 "📥 Download Categorized Pages",
@@ -1061,6 +1028,7 @@ if st.session_state.results:
                 key="dl_cat_pages",
             )
 
+        # ── TAB 3: Categorized PDFs ───────────────────────────
         with tab3:
             st.subheader("📑 PDFs by Category")
             cat_pdfs  = res.get("categorized_pdfs", {})
@@ -1076,8 +1044,8 @@ if st.session_state.results:
                     f"📂 {label} — {len(urls)} PDF(s)",
                     expanded=False
                 ):
-                    for u in urls:
-                        st.markdown(f"- [{u}]({u})")
+                    for i, u in enumerate(urls, 1):
+                        st.markdown(f"{i}. [{u}]({u})")
                         pdf_lines.append(u)
             if pdf_lines:
                 st.download_button(
@@ -1087,12 +1055,14 @@ if st.session_state.results:
                     key="dl_cat_pdf",
                 )
 
+        # ── TAB 4: Pages with PDFs (NESTED COLLAPSIBLE) ──────
         with tab4:
             ppbc = res.get("pages_pdfs_by_category", {})
             total_pwp = sum(len(v) for v in ppbc.values())
             st.subheader(
                 f"🗂️ Pages with PDFs by Category ({total_pwp})"
             )
+
             if ppbc:
                 report_lines = []
                 for cat_label in sorted(ppbc.keys(), key=sort_key):
@@ -1106,104 +1076,84 @@ if st.session_state.results:
                         f"{total_pdfs_cat} PDFs)",
                         f"{'='*60}",
                     ]
+
+                    # OUTER expander for category
                     with st.expander(
                         f"📂 {cat_label} — "
                         f"{len(pages_dict)} page(s), "
                         f"{total_pdfs_cat} PDF(s)",
                         expanded=False,
                     ):
-                        for page_url, pdfs in sorted(
-                            pages_dict.items()
+                        # Build nested HTML <details> for each page so
+                        # users see only the URL + PDF count, and can
+                        # expand individual pages on demand.
+                        sorted_pages = sorted(pages_dict.items())
+                        html_parts = [
+                            '<div style="font-family:inherit;">'
+                        ]
+                        for page_idx, (page_url, pdfs) in enumerate(
+                            sorted_pages, 1
                         ):
-                            st.markdown(
-                                f"**🔗 [{page_url}]({page_url})**"
+                            n_pdfs = len(pdfs)
+                            page_cat = categorize_url(page_url)
+                            page_colour = CATEGORY_COLOURS.get(
+                                page_cat, "#7f7f7f"
                             )
-                            for pdf in pdfs:
-                                pdf_cat = categorize_url(pdf)
-                                st.markdown(
-                                    f"&nbsp;&nbsp;↳ [{pdf}]({pdf})"
-                                    f"  `{pdf_cat}`"
+
+                            html_parts.append(
+                                f'<details style="margin:6px 0;'
+                                f'padding:6px 10px;border-left:3px '
+                                f'solid {page_colour};'
+                                f'background:#fafafa;border-radius:4px;">'
+                                f'<summary style="cursor:pointer;'
+                                f'padding:4px 0;font-weight:500;">'
+                                f'<strong>{page_idx}.</strong> '
+                                f'<a href="{page_url}" target="_blank" '
+                                f'style="text-decoration:none;">'
+                                f'{page_url}</a> '
+                                f'<span style="background:#0066cc;'
+                                f'color:white;padding:2px 8px;'
+                                f'border-radius:10px;font-size:0.8em;'
+                                f'margin-left:6px;">{n_pdfs} PDF'
+                                f'{"s" if n_pdfs != 1 else ""}'
+                                f'</span></summary>'
+                                f'<ol style="margin:8px 0 4px 28px;'
+                                f'padding-left:8px;">'
+                            )
+                            report_lines.append(
+                                f"  PAGE {page_idx} "
+                                f"({n_pdfs} PDFs): {page_url}"
+                            )
+
+                            for pdf_idx, pdf in enumerate(pdfs, 1):
+                                pdf_cat    = categorize_url(pdf)
+                                pdf_colour = CATEGORY_COLOURS.get(
+                                    pdf_cat, "#7f7f7f"
+                                )
+                                html_parts.append(
+                                    f'<li style="margin:3px 0;'
+                                    f'word-break:break-all;">'
+                                    f'<a href="{pdf}" target="_blank">'
+                                    f'{pdf}</a> '
+                                    f'<span style="background:'
+                                    f'{pdf_colour};color:white;'
+                                    f'padding:1px 6px;border-radius:3px;'
+                                    f'font-size:0.7em;'
+                                    f'margin-left:4px;">{pdf_cat}'
+                                    f'</span></li>'
                                 )
                                 report_lines.append(
-                                    f"  PAGE: {page_url}"
+                                    f"    {pdf_idx}. [{pdf_cat}] {pdf}"
                                 )
-                                report_lines.append(
-                                    f"    PDF [{pdf_cat}]: {pdf}"
-                                )
-                            st.markdown("---")
+                            html_parts.append('</ol></details>')
+
+                        html_parts.append('</div>')
+                        st.markdown(
+                            "".join(html_parts),
+                            unsafe_allow_html=True,
+                        )
+
                 st.download_button(
                     "📥 Download Pages with PDFs",
                     "\n".join(report_lines),
                     "pages_with_pdfs.txt", "text/plain",
-                    key="dl_pages_pdfs",
-                )
-            else:
-                st.info("No pages with PDFs found.")
-
-        # ── Tab 5: Sitemap ────────────────────────────────────
-        with tab5:
-            st.subheader(
-                f"🗺️ Sitemap — {len(res['all_pages'])} pages"
-            )
-
-            # ── Legend ────────────────────────────────────────
-            st.markdown("**Category colour legend:**")
-            legend_html = " &nbsp; ".join(
-                f'<span style="background:{col};color:white;'
-                f'padding:2px 8px;border-radius:4px;'
-                f'font-size:0.75em;">{name}</span>'
-                for name, col in CATEGORY_COLOURS.items()
-            )
-            st.markdown(legend_html, unsafe_allow_html=True)
-            st.markdown("---")
-
-            # ── Controls ──────────────────────────────────────
-            sm_col1, sm_col2 = st.columns([1, 2])
-            with sm_col1:
-                max_depth_show = st.slider(
-                    "Auto-show up to depth",
-                    min_value=1, max_value=8, value=3,
-                    key="sitemap_depth",
-                    help=(
-                        "Rows at this depth and shallower render "
-                        "directly. Deeper rows appear in a single "
-                        "expander per parent group."
-                    )
-                )
-            with sm_col2:
-                all_cats_sm = sorted(
-                    set(categorize_url(u) for u in res["all_pages"])
-                )
-                selected_cats = st.multiselect(
-                    "Filter by category (empty = show all)",
-                    options=all_cats_sm,
-                    default=[],
-                    key="sitemap_cat_filter",
-                )
-
-            pages_to_map = res["all_pages"]
-            if selected_cats:
-                pages_to_map = [
-                    u for u in pages_to_map
-                    if categorize_url(u) in selected_cats
-                ]
-
-            st.caption(f"Showing {len(pages_to_map)} pages")
-            st.markdown("---")
-
-            if pages_to_map:
-                # Render flat sitemap (no nested expanders)
-                dl_lines = render_flat_sitemap(
-                    pages_to_map,
-                    max_depth_show=max_depth_show,
-                )
-
-                st.markdown("---")
-                st.download_button(
-                    "📥 Download Sitemap",
-                    build_sitemap_text(pages_to_map),
-                    "sitemap.txt", "text/plain",
-                    key="dl_sitemap",
-                )
-            else:
-                st.info("No pages match the selected filters.")
